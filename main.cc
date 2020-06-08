@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <random>
 #include <utility>
@@ -20,6 +21,11 @@ using std::swap;
 #include "gl_core_3_3.h"
 #include "SDL2/SDL.h"
 #include "SDL2/SDL_opengl.h"
+
+constexpr int chunk_size = 32;
+#define CHUNK_SIZE_STR "32"
+
+constexpr int chunk_view_radius = 7;
 
 namespace {
 
@@ -261,9 +267,6 @@ void draw_skybox(
     PANIC_IF_GL_ERROR;
 }
 
-constexpr int chunk_size = 32;
-#define CHUNK_SIZE_STR "32"
-
 static const float chunk_vertices[32] =
 {
     0, chunk_size, chunk_size, 1,
@@ -412,6 +415,7 @@ class chunk
     bool dirty = false;
     uint16_t blocks[chunk_size][chunk_size][chunk_size] = {};
     GLuint texture_name = 0;
+    int32_t opaque_block_count = 0;
   public:
     const glm::vec3 position;
 
@@ -454,18 +458,26 @@ class chunk
         }
     }
 
+    int32_t get_opaque_block_count() const
+    {
+        return opaque_block_count;
+    }
+
     void set_block(size_t x, size_t y, size_t z, uint16_t block)
     {
         assert(x < chunk_size);
         assert(y < chunk_size);
         assert(z < chunk_size);
+        const int old_alpha = int(blocks[x][y][z] & 1);
+        const int new_alpha = int(block & 1);
         blocks[x][y][z] = block;
+        opaque_block_count += (new_alpha - old_alpha);
     }
-    
+
     bool in_chunk(glm::vec3 v) const
     {
-        return position.x < v.x && v.x < position.x + chunk_size && 
-               position.y < v.y && v.y < position.y + chunk_size && 
+        return position.x < v.x && v.x < position.x + chunk_size &&
+               position.y < v.y && v.y < position.y + chunk_size &&
                position.z < v.z && v.z < position.z + chunk_size;
     }
 
@@ -482,6 +494,10 @@ bool chunk_debug = false;
 void draw_chunk(
     chunk& c, glm::vec3 eye, glm::mat4 view_matrix, glm::mat4 proj_matrix)
 {
+    if (c.get_opaque_block_count() == 0) {
+        return;
+    }
+
     static GLuint vao = 0;
     static GLuint program_id;
     static GLuint vertex_buffer_id;
@@ -553,6 +569,46 @@ void draw_chunk(
     PANIC_IF_GL_ERROR;
 }
 
+class world
+{
+    std::unordered_map<uint64_t, std::unique_ptr<chunk>> chunk_map;
+
+  public:
+    chunk* chunk_ptr(int x_chunk, int y_chunk, int z_chunk, bool needed=false)
+    {
+        assert(int16_t(x_chunk) == x_chunk);
+        assert(int16_t(y_chunk) == y_chunk);
+        assert(int16_t(z_chunk) == z_chunk);
+        uint64_t key = uint16_t(x_chunk);
+        key = key << 16 | uint16_t(y_chunk);
+        key = key << 16 | uint16_t(z_chunk);
+        if (needed) {
+            return chunk_map[key].get();
+        }
+        auto iter = chunk_map.find(key);
+        return iter == chunk_map.end() ? nullptr : iter->second.get();
+    }
+
+    chunk& chunk_ref(int x_chunk, int y_chunk, int z_chunk)
+    {
+        chunk* ptr = chunk_ptr(x_chunk, y_chunk, z_chunk, true);
+        assert(ptr);
+        return *ptr;
+    }
+
+    void set_block(int x, int y, int z, uint16_t block)
+    {
+        unsigned x_in_chunk = unsigned(x) % chunk_size;
+        unsigned y_in_chunk = unsigned(y) % chunk_size;
+        unsigned z_in_chunk = unsigned(z) % chunk_size;
+        int x_chunk = x - int(x_in_chunk);
+        int y_chunk = y - int(y_in_chunk);
+        int z_chunk = z - int(z_in_chunk);
+        chunk_ref(x_chunk, y_chunk, z_chunk).set_block(
+            x_in_chunk, y_in_chunk, z_in_chunk, block);
+    }
+};
+
 std::vector<std::unique_ptr<chunk>> chunk_vector;
 
 std::unique_ptr<chunk> random_chunk(
@@ -560,7 +616,7 @@ std::unique_ptr<chunk> random_chunk(
 {
     auto color = (rng() >> 16) | 1;
     auto chunk_ptr = std::make_unique<chunk>(chunk_position);
-    for (int i = 0; i < 2048; ++i) {
+    for (int i = 0; i < 512; ++i) {
         auto x = rng() >> 27;
         auto y = rng() >> 27;
         auto z = rng() >> 27;
@@ -609,10 +665,22 @@ bool handle_controls(
     glm::mat4& view = *view_ptr;
     glm::mat4& projection = *proj_ptr;
     static bool w, a, s, d, q, e, space;
+    static bool right_mouse;
     static float theta = 1.5707f, phi = 1.5707f;
     static float mouse_x, mouse_y;
     glm::vec3& eye = *eye_ptr;
     static float camera_speed_multiplier = 1.0f;
+
+    static std::unordered_map<SDL_Scancode, SDL_Scancode> scancode_map;
+    auto map_scancode = [] (SDL_Scancode in)
+    {
+        SDL_Scancode out = scancode_map[in];
+        if (out == 0) {
+            scancode_map[in] = out;
+            return in;
+        }
+        return out;
+    };
 
     bool no_quit = true;
     SDL_Event event;
@@ -620,45 +688,67 @@ bool handle_controls(
         switch (event.type) {
           default:
           break; case SDL_KEYDOWN:
-            switch (event.key.keysym.scancode) {
+            switch (map_scancode(event.key.keysym.scancode)) {
               default:
-              break; case SDL_SCANCODE_U: w = true;
-              break; case SDL_SCANCODE_E: a = true;
-              break; case SDL_SCANCODE_SPACE: s = true;
-              break; case SDL_SCANCODE_A: d = true;
-              break; case SDL_SCANCODE_O: q = true;
-              break; case SDL_SCANCODE_P: e = true;
-              break; case SDL_SCANCODE_LCTRL:  space = true;
-              break; case SDL_SCANCODE_D: chunk_debug = !chunk_debug;
+              break; case SDL_SCANCODE_W: w = true;
+              break; case SDL_SCANCODE_A: a = true;
+              break; case SDL_SCANCODE_S: s = true;
+              break; case SDL_SCANCODE_D: d = true;
+              break; case SDL_SCANCODE_Q: q = true;
+              break; case SDL_SCANCODE_E: e = true;
+              break; case SDL_SCANCODE_SPACE:  space = true;
+              break; case SDL_SCANCODE_B: chunk_debug = !chunk_debug;
               break; case SDL_SCANCODE_1: case SDL_SCANCODE_2:
                      case SDL_SCANCODE_3: case SDL_SCANCODE_4:
                      case SDL_SCANCODE_5: case SDL_SCANCODE_6:
                      case SDL_SCANCODE_7: case SDL_SCANCODE_8:
                      case SDL_SCANCODE_9: case SDL_SCANCODE_0:
                 camera_speed_multiplier = pow(
-                    1.414, event.key.keysym.scancode - SDL_SCANCODE_5);
+                    2, event.key.keysym.scancode - SDL_SCANCODE_5);
+              break; case SDL_SCANCODE_COMMA:
+                w = a = s = d = q = e = space = false;
+                scancode_map[SDL_SCANCODE_O] = SDL_SCANCODE_Q;
+                scancode_map[SDL_SCANCODE_U] = SDL_SCANCODE_W;
+                scancode_map[SDL_SCANCODE_P] = SDL_SCANCODE_E;
+                scancode_map[SDL_SCANCODE_E] = SDL_SCANCODE_A;
+                scancode_map[SDL_SCANCODE_SPACE] = SDL_SCANCODE_S;
+                scancode_map[SDL_SCANCODE_A] = SDL_SCANCODE_D;
+                scancode_map[SDL_SCANCODE_LCTRL] = SDL_SCANCODE_SPACE;
             }
 
           break; case SDL_KEYUP:
-            switch (event.key.keysym.scancode) {
+            switch (map_scancode(event.key.keysym.scancode)) {
               default:
-              break; case SDL_SCANCODE_U: w = false;
-              break; case SDL_SCANCODE_E: a = false;
-              break; case SDL_SCANCODE_SPACE: s = false;
-              break; case SDL_SCANCODE_A: d = false;
-              break; case SDL_SCANCODE_O: q = false;
-              break; case SDL_SCANCODE_P: e = false;
-              break; case SDL_SCANCODE_LCTRL:  space = false;
+              break; case SDL_SCANCODE_W: w = false;
+              break; case SDL_SCANCODE_A: a = false;
+              break; case SDL_SCANCODE_S: s = false;
+              break; case SDL_SCANCODE_D: d = false;
+              break; case SDL_SCANCODE_Q: q = false;
+              break; case SDL_SCANCODE_E: e = false;
+              break; case SDL_SCANCODE_SPACE:  space = false;
             }
           break; case SDL_MOUSEWHEEL:
-            phi -= event.wheel.y * 2e-2f;
-            theta -= event.wheel.x * 2e-2f;
-          break; case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP:
+            phi -= event.wheel.y * 5e-2f;
+            theta -= event.wheel.x * 5e-2f;
+          break; case SDL_MOUSEBUTTONDOWN:
+            if (event.button.button == SDL_BUTTON_RIGHT) {
+                right_mouse = true;
+            }
             mouse_x = event.button.x;
-            mouse_y = event.button.y;
+            mouse_y = event.button.x;
+          break; case SDL_MOUSEBUTTONUP:
+            if (event.button.button == SDL_BUTTON_RIGHT) {
+                right_mouse = false;
+            }
+            mouse_x = event.button.x;
+            mouse_y = event.button.x;
           break; case SDL_MOUSEMOTION:
             mouse_x = event.motion.x;
             mouse_y = event.motion.y;
+            if (right_mouse) {
+                theta += event.motion.xrel * 1.5e-3;
+                phi += event.motion.yrel * 1.5e-3;
+            }
           break; case SDL_WINDOWEVENT:
             if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
                 event.window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -748,15 +838,18 @@ int Main(int, char** argv)
     // glCullFace(GL_BACK);
 
     std::mt19937 rng;
-    const float bounds = 320;
+    const float bounds = chunk_view_radius * chunk_size;
+    double block_count = 0;
     for (float x = 0; x < bounds; x += chunk_size) {
         for (float y = 0; y < bounds; y += chunk_size) {
             for (float z = 0; z < bounds; z += chunk_size) {
-                chunk_vector.push_back(
-                    random_chunk(glm::vec3(x, y, z), rng));
+                auto unique_chunk = random_chunk(glm::vec3(x, y, z), rng);
+                block_count += unique_chunk->get_opaque_block_count();
+                chunk_vector.push_back(std::move(unique_chunk));
             }
         }
     }
+    printf("%.0f blocks\n", block_count);
 
     bool no_quit = true;
 
