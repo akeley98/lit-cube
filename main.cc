@@ -6,9 +6,10 @@
 #include <string.h>
 #include <time.h>
 
+#include <memory>
 #include <string>
 #include <vector>
-#include <list>
+#include <random>
 #include <utility>
 using std::swap;
 
@@ -25,7 +26,7 @@ namespace {
 constexpr float
     fovy_radians = 1.0f,
     near_plane = 0.3f,
-    far_plane = 347.0f,
+    far_plane = 700.0f,
     camera_speed = 8e-2;
 
 int screen_x = 1280, screen_y = 960;
@@ -95,12 +96,6 @@ static GLuint make_program(const char* vs_code, const char* fs_code)
     return program_id;
 }
 
-void draw_skybox(
-    glm::mat4 view_matrix, glm::mat4 proj_matrix);
-
-void draw_scene(
-    glm::vec3 eye, glm::mat4 view_matrix, glm::mat4 proj_matrix);
-
 void load_cubemap_face(GLenum face, const char* filename)
 {
     std::string full_filename = argv0 + "Tex/" + filename;
@@ -160,7 +155,7 @@ static const char skybox_vs_source[] =
 "uniform mat4 view_matrix;\n"
 "uniform mat4 proj_matrix;\n"
 "void main() {\n"
-    "vec4 v = view_matrix * vec4(200*position, 0.0);\n"
+    "vec4 v = view_matrix * vec4(400*position, 0.0);\n"
     "gl_Position = proj_matrix * vec4(v.xyz, 1);\n"
     "texture_coordinate = position;\n"
 "}\n";
@@ -266,8 +261,8 @@ void draw_skybox(
     PANIC_IF_GL_ERROR;
 }
 
-constexpr int chunk_size = 64;
-#define CHUNK_SIZE_STR "64"
+constexpr int chunk_size = 32;
+#define CHUNK_SIZE_STR "32"
 
 static const float chunk_vertices[32] =
 {
@@ -282,23 +277,24 @@ static const float chunk_vertices[32] =
 };
 
 static const GLushort chunk_elements[36] = {
-    5, 1, 2, 5, 2, 6,
-    7, 4, 5, 7, 5, 6,
-    1, 0, 3, 1, 3, 2,
-    4, 7, 3, 4, 3, 0,
-    0, 1, 5, 0, 5, 4,
-    2, 3, 7, 2, 7, 6
+    6, 7, 2, 7, 3, 2,
+    4, 5, 0, 5, 1, 0,
+    0, 3, 4, 3, 7, 4,
+    6, 2, 5, 2, 1, 5,
+    2, 3, 1, 3, 0, 1,
+    6, 5, 7, 5, 4, 7,
 };
 
 static const char chunk_vs_source[] =
 "#version 330\n"
 "layout(location=0) in vec4 in_vertex;\n"
 "out vec4 model_space_position;\n"
-"uniform vec4 chunk_offset;\n"
+"uniform vec3 chunk_offset;\n"
 "uniform mat4 view_matrix;\n"
 "uniform mat4 proj_matrix;\n"
 "void main() {\n"
-    "gl_Position = proj_matrix * view_matrix * (in_vertex + chunk_offset);\n"
+    "gl_Position = proj_matrix * view_matrix * \n"
+        "(in_vertex + vec4(chunk_offset, 0));\n"
     "model_space_position = in_vertex;\n"
 "}\n";
 
@@ -307,7 +303,10 @@ static const char chunk_fs_source[] =
 "in vec4 model_space_position;\n"
 "uniform vec3 eye_in_model_space;\n"
 "uniform sampler3D chunk_blocks;\n"
+"uniform vec3 chunk_offset;\n"
 "uniform bool chunk_debug;\n"
+"uniform mat4 view_matrix;\n"
+"uniform mat4 proj_matrix;\n"
 "out vec4 color;\n"
 "void main() {\n"
 "if (!chunk_debug) {\n"
@@ -325,7 +324,7 @@ static const char chunk_fs_source[] =
     "int x_init = xm > 0 ? 0 : " CHUNK_SIZE_STR ";\n"
     "int x_end = xm > 0 ? " CHUNK_SIZE_STR " : 0;\n"
     "int x_step = xm > 0 ? 1 : -1;\n"
-    "float x_fudge = xm > 0 ? .05 : -.05;\n"
+    "float x_fudge = xm > 0 ? .25 : -.25;\n"
     "for (int x = x_init; x != x_end; x += x_step) {\n"
         "float t = (x - x0) / xm;\n"
         "float y = y0 + ym * t;\n"
@@ -396,6 +395,8 @@ static const char chunk_fs_source[] =
     "}\n"
     "if (best_color.a == 0) discard;\n"
     "color = best_color;\n"
+    //"vec4 v = proj_matrix * view_matrix * vec4(best_coord + chunk_offset, 1);\n"
+    //"gl_FragDepth = .3;\n"
 "} else {\n"
     // "color = texture(chunk_blocks, model_space_position.xyz / 16.0);\n"
     "int x_floor = int(floor(model_space_position.x));\n"
@@ -412,9 +413,9 @@ class chunk
     uint16_t blocks[chunk_size][chunk_size][chunk_size] = {};
     GLuint texture_name = 0;
   public:
-    const glm::vec4 position;
+    const glm::vec3 position;
 
-    chunk(glm::vec4 in_position) : position(in_position)
+    chunk(glm::vec3 in_position) : position(in_position)
     {
 
     }
@@ -459,6 +460,13 @@ class chunk
         assert(y < chunk_size);
         assert(z < chunk_size);
         blocks[x][y][z] = block;
+    }
+    
+    bool in_chunk(glm::vec3 v) const
+    {
+        return position.x < v.x && v.x < position.x + chunk_size && 
+               position.y < v.y && v.y < position.y + chunk_size && 
+               position.z < v.z && v.z < position.z + chunk_size;
     }
 
     ~chunk()
@@ -520,17 +528,17 @@ void draw_chunk(
         glEnableVertexAttribArray(0);
         PANIC_IF_GL_ERROR;
     }
-    
+
     glm::vec3 eye_in_model_space = (eye - glm::vec3(c.position));
     // printf("(%f %f %f)\n", eye_in_model_space.x, eye_in_model_space.y, eye_in_model_space.z);
-    
+
     glUseProgram(program_id);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_3D, c.get_texture_name());
 
     glUniform1i(chunk_blocks_id, 0);
-    glUniform4fv(chunk_offset_id, 1, &c.position[0]);
+    glUniform3fv(chunk_offset_id, 1, &c.position[0]);
     glUniformMatrix4fv(view_matrix_id, 1, 0, &view_matrix[0][0]);
     glUniformMatrix4fv(proj_matrix_id, 1, 0, &proj_matrix[0][0]);
     glUniform3fv(eye_in_model_space_id, 1, &eye_in_model_space[0]);
@@ -545,30 +553,66 @@ void draw_chunk(
     PANIC_IF_GL_ERROR;
 }
 
+std::vector<std::unique_ptr<chunk>> chunk_vector;
+
+std::unique_ptr<chunk> random_chunk(
+    glm::vec3 chunk_position, std::mt19937& rng)
+{
+    auto color = (rng() >> 16) | 1;
+    auto chunk_ptr = std::make_unique<chunk>(chunk_position);
+    for (int i = 0; i < 2048; ++i) {
+        auto x = rng() >> 27;
+        auto y = rng() >> 27;
+        auto z = rng() >> 27;
+        chunk_ptr->set_block(x, y, z, color);
+    }
+    for (int i = 0; i < 2048; ++i) {
+        color = (rng() >> 16) | 1;
+        auto x = rng() >> 27;
+        auto y = rng() >> 27;
+        auto z = rng() >> 27;
+        chunk_ptr->set_block(x, y, z, color);
+    }
+    return chunk_ptr;
+}
+
 void draw_scene(
     glm::vec3 eye,
+    glm::vec3 forward_normal_vector,
     glm::mat4 view_matrix,
     glm::mat4 proj_matrix)
 {
-    static chunk the_chunk(glm::vec4(0,0,0,1));
-    the_chunk.set_block(0, 0, 0, 0xffff);
-    the_chunk.set_block(0, 0, 3, 0xf801);
-    the_chunk.set_block(0, 3, 1, 0x07C1);
-    the_chunk.set_block(2, 0, 0, 0x003F);
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     draw_skybox(view_matrix, proj_matrix);
-    draw_chunk(the_chunk, eye * 2.0f, view_matrix, proj_matrix);
+    chunk* chunk_eye_is_inside = nullptr;
+    glm::vec3 fudged_eye = eye + forward_normal_vector * 0.5f;
+    // Todo: sort from nearest to furthest (reverse painters)
+    for (auto& chunk_ptr : chunk_vector) {
+        if (chunk_ptr->in_chunk(fudged_eye)) {
+            chunk_eye_is_inside = chunk_ptr.get();
+        }
+        else {
+            draw_chunk(*chunk_ptr, eye, view_matrix, proj_matrix);
+        }
+    }
+    if (chunk_eye_is_inside != nullptr) {
+        glDisable(GL_DEPTH_TEST);
+        draw_chunk(*chunk_eye_is_inside, eye, view_matrix, proj_matrix);
+        glEnable(GL_DEPTH_TEST);
+    }
 }
 
 bool handle_controls(
-    glm::vec3* eye_ptr, glm::mat4* view_ptr, glm::mat4* proj_ptr)
+    glm::vec3* eye_ptr, glm::vec3* forward_normal_vector_ptr,
+    glm::mat4* view_ptr, glm::mat4* proj_ptr)
 {
     glm::mat4& view = *view_ptr;
     glm::mat4& projection = *proj_ptr;
-    static bool w, a, s, d, q, e, space, shift;
+    static bool w, a, s, d, q, e, space;
     static float theta = 1.5707f, phi = 1.5707f;
     static float mouse_x, mouse_y;
     glm::vec3& eye = *eye_ptr;
+    static float camera_speed_multiplier = 1.0f;
 
     bool no_quit = true;
     SDL_Event event;
@@ -585,8 +629,14 @@ bool handle_controls(
               break; case SDL_SCANCODE_O: q = true;
               break; case SDL_SCANCODE_P: e = true;
               break; case SDL_SCANCODE_LCTRL:  space = true;
-              break; case SDL_SCANCODE_I: shift = true;
               break; case SDL_SCANCODE_D: chunk_debug = !chunk_debug;
+              break; case SDL_SCANCODE_1: case SDL_SCANCODE_2:
+                     case SDL_SCANCODE_3: case SDL_SCANCODE_4:
+                     case SDL_SCANCODE_5: case SDL_SCANCODE_6:
+                     case SDL_SCANCODE_7: case SDL_SCANCODE_8:
+                     case SDL_SCANCODE_9: case SDL_SCANCODE_0:
+                camera_speed_multiplier = pow(
+                    1.414, event.key.keysym.scancode - SDL_SCANCODE_5);
             }
 
           break; case SDL_KEYUP:
@@ -599,7 +649,6 @@ bool handle_controls(
               break; case SDL_SCANCODE_O: q = false;
               break; case SDL_SCANCODE_P: e = false;
               break; case SDL_SCANCODE_LCTRL:  space = false;
-              break; case SDL_SCANCODE_I: shift = false;
             }
           break; case SDL_MOUSEWHEEL:
             phi -= event.wheel.y * 2e-2f;
@@ -629,13 +678,14 @@ bool handle_controls(
         cosf(phi),
         sinf(phi) * sinf(theta)
     );
+    *forward_normal_vector_ptr = forward_normal_vector;
 
     // Free-camera mode.
     auto right_vector = glm::cross(forward_normal_vector, glm::vec3(0,1,0));
     right_vector = glm::normalize(right_vector);
     auto up_vector = glm::cross(right_vector, forward_normal_vector);
 
-    float V = shift ? camera_speed * 0.2f : camera_speed;
+    float V = camera_speed * camera_speed_multiplier;
     eye += V * right_vector * (float)(d - a);
     eye += V * forward_normal_vector * (float)(w - s);
     eye += V * up_vector * (float)(e - q);
@@ -695,11 +745,22 @@ int Main(int, char** argv)
     glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
     glEnable(GL_DEPTH_TEST);
     // glEnable(GL_CULL_FACE);
-    // glCullFace(GL_FRONT);
+    // glCullFace(GL_BACK);
+
+    std::mt19937 rng;
+    const float bounds = 320;
+    for (float x = 0; x < bounds; x += chunk_size) {
+        for (float y = 0; y < bounds; y += chunk_size) {
+            for (float z = 0; z < bounds; z += chunk_size) {
+                chunk_vector.push_back(
+                    random_chunk(glm::vec3(x, y, z), rng));
+            }
+        }
+    }
 
     bool no_quit = true;
 
-    glm::vec3 eye(0, 0, 0);
+    glm::vec3 eye(0, 0, 0), forward_normal_vector;
     glm::mat4 view_matrix, proj_matrix;
 
     auto previous_update = SDL_GetTicks();
@@ -709,7 +770,8 @@ int Main(int, char** argv)
     while (no_quit) {
         auto current_tick = SDL_GetTicks();
         if (current_tick >= previous_update + 16) {
-            no_quit = handle_controls(&eye, &view_matrix, &proj_matrix);
+            no_quit = handle_controls(
+                &eye, &forward_normal_vector, &view_matrix, &proj_matrix);
             previous_update += 16;
             if (current_tick - previous_update > 100) {
                 previous_update = current_tick;
@@ -725,7 +787,7 @@ int Main(int, char** argv)
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, screen_x, screen_y);
-        draw_scene(eye, view_matrix, proj_matrix);
+        draw_scene(eye, forward_normal_vector, view_matrix, proj_matrix);
         SDL_GL_SwapWindow(window);
         PANIC_IF_GL_ERROR;
     }
