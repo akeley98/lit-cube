@@ -266,8 +266,8 @@ void draw_skybox(
     PANIC_IF_GL_ERROR;
 }
 
-constexpr int chunk_size = 4;
-#define CHUNK_SIZE_STR "4"
+constexpr int chunk_size = 64;
+#define CHUNK_SIZE_STR "64"
 
 static const float chunk_vertices[32] =
 {
@@ -282,9 +282,9 @@ static const float chunk_vertices[32] =
 };
 
 static const GLushort chunk_elements[36] = {
+    5, 1, 2, 5, 2, 6,
     7, 4, 5, 7, 5, 6,
     1, 0, 3, 1, 3, 2,
-    5, 1, 2, 5, 2, 6,
     4, 7, 3, 4, 3, 0,
     0, 1, 5, 0, 5, 4,
     2, 3, 7, 2, 7, 6
@@ -318,34 +318,84 @@ static const char chunk_fs_source[] =
     "float xm = slope.x;\n"
     "float ym = slope.y;\n"
     "float zm = slope.z;\n"
-    "float best_x = 0;\n" // XXX
-    "float best_y = 0;\n" // XXX
-    "float best_z = 0;\n" // XXX
     "float rcp = 1.0/" CHUNK_SIZE_STR ".0;\n"
     "float best_t = 1.0 / 0.0;\n"
     "vec4 best_color = vec4(0,0,0,0);\n"
-    "for (int x = 0; x < " CHUNK_SIZE_STR "; ++x) {\n"
+    "vec3 best_coord = vec3(0,0,0);\n"
+    "int x_init = xm > 0 ? 0 : " CHUNK_SIZE_STR ";\n"
+    "int x_end = xm > 0 ? " CHUNK_SIZE_STR " : 0;\n"
+    "int x_step = xm > 0 ? 1 : -1;\n"
+    "float x_fudge = xm > 0 ? .05 : -.05;\n"
+    "for (int x = x_init; x != x_end; x += x_step) {\n"
         "float t = (x - x0) / xm;\n"
         "float y = y0 + ym * t;\n"
         "float z = z0 + zm * t;\n"
         "if (y < 0 || y > " CHUNK_SIZE_STR ") continue;\n"
         "if (z < 0 || z > " CHUNK_SIZE_STR ") continue;\n"
-        "vec3 texcoord = vec3(x + .05, y, z) * rcp;\n"
+        "vec3 texcoord = vec3(x + x_fudge, y, z) * rcp;\n"
         "vec4 lookup_color = texture(chunk_blocks, texcoord);\n"
         "if (lookup_color.a > 0 && t > 0) {\n"
             "if (best_t > t) {\n"
                 "best_t = t;\n"
                 "best_color = lookup_color;\n"
-                "best_x = x;\n"
-                "best_y = y;\n"
-                "best_z = z;\n"
+                "best_coord = vec3(x,y,z);\n"
+                "if (y - floor(y + .1) < .1 || z - floor(z + .1) < .1) {\n"
+                    "best_color.rgb *= 0.5;\n"
+                "}\n"
+            "}\n"
+            "break;\n"
+        "}\n"
+    "}\n"
+    "int y_init = ym > 0 ? 0 : " CHUNK_SIZE_STR ";\n"
+    "int y_end = ym > 0 ? " CHUNK_SIZE_STR " : 0;\n"
+    "int y_step = ym > 0 ? 1 : -1;\n"
+    "float y_fudge = ym > 0 ? .05 : -.05;\n"
+    "for (int y = y_init; y != y_end; y += y_step) {\n"
+        "float t = (y - y0) / ym;\n"
+        "float x = x0 + xm * t;\n"
+        "float z = z0 + zm * t;\n"
+        "if (x < 0 || x > " CHUNK_SIZE_STR ") continue;\n"
+        "if (z < 0 || z > " CHUNK_SIZE_STR ") continue;\n"
+        "vec3 texcoord = vec3(x, y + y_fudge, z) * rcp;\n"
+        "vec4 lookup_color = texture(chunk_blocks, texcoord);\n"
+        "if (lookup_color.a > 0 && t > 0) {\n"
+            "if (best_t > t) {\n"
+                "best_t = t;\n"
+                "best_color = lookup_color;\n"
+                "best_coord = vec3(x,y,z);\n"
+                "if (x - floor(x + .1) < .1 || z - floor(z + .1) < .1) {\n"
+                    "best_color.rgb *= 0.5;\n"
+                "}\n"
+            "}\n"
+            "break;\n"
+        "}\n"
+    "}\n"
+    "int z_init = zm > 0 ? 0 : " CHUNK_SIZE_STR ";\n"
+    "int z_end = zm > 0 ? " CHUNK_SIZE_STR " : 0;\n"
+    "int z_step = zm > 0 ? 1 : -1;\n"
+    "float z_fudge = zm > 0 ? .05 : -.05;\n"
+    "for (int z = z_init; z != z_end; z += z_step) {\n"
+        "float t = (z - z0) / zm;\n"
+        "float x = x0 + xm * t;\n"
+        "float y = y0 + ym * t;\n"
+        "if (x < 0 || x > " CHUNK_SIZE_STR ") continue;\n"
+        "if (y < 0 || y > " CHUNK_SIZE_STR ") continue;\n"
+        "vec3 texcoord = vec3(x, y, z + z_fudge) * rcp;\n"
+        "vec4 lookup_color = texture(chunk_blocks, texcoord);\n"
+        "if (lookup_color.a > 0 && t > 0) {\n"
+            "if (best_t > t) {\n"
+                "best_t = t;\n"
+                "best_color = lookup_color;\n"
+                "best_coord = vec3(x,y,z);\n"
+                "if (x - floor(x + .1) < .1 || y - floor(y + .1) < .1) {\n"
+                    "best_color.rgb *= 0.5;\n"
+                "}\n"
             "}\n"
             "break;\n"
         "}\n"
     "}\n"
     "if (best_color.a == 0) discard;\n"
-    //"color = best_color;\n"
-    "color = vec4(best_x*.2, best_y*.2, best_z*.2, 1);"
+    "color = best_color;\n"
 "} else {\n"
     // "color = texture(chunk_blocks, model_space_position.xyz / 16.0);\n"
     "int x_floor = int(floor(model_space_position.x));\n"
@@ -470,6 +520,10 @@ void draw_chunk(
         glEnableVertexAttribArray(0);
         PANIC_IF_GL_ERROR;
     }
+    
+    glm::vec3 eye_in_model_space = (eye - glm::vec3(c.position));
+    // printf("(%f %f %f)\n", eye_in_model_space.x, eye_in_model_space.y, eye_in_model_space.z);
+    
     glUseProgram(program_id);
 
     glActiveTexture(GL_TEXTURE0);
@@ -479,11 +533,11 @@ void draw_chunk(
     glUniform4fv(chunk_offset_id, 1, &c.position[0]);
     glUniformMatrix4fv(view_matrix_id, 1, 0, &view_matrix[0][0]);
     glUniformMatrix4fv(proj_matrix_id, 1, 0, &proj_matrix[0][0]);
-    glUniform3fv(eye_in_model_space_id, 1,
-        &((eye - glm::vec3(c.position))[0]));
+    glUniform3fv(eye_in_model_space_id, 1, &eye_in_model_space[0]);
     glUniform1i(chunk_debug_id, chunk_debug);
 
     glBindVertexArray(vao);
+    //glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (void*)0);
     glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_SHORT, (void*)0);
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_3D, 0);
@@ -499,11 +553,11 @@ void draw_scene(
     static chunk the_chunk(glm::vec4(0,0,0,1));
     the_chunk.set_block(0, 0, 0, 0xffff);
     the_chunk.set_block(0, 0, 3, 0xf801);
-    the_chunk.set_block(0, 3, 0, 0x07C1);
+    the_chunk.set_block(0, 3, 1, 0x07C1);
     the_chunk.set_block(2, 0, 0, 0x003F);
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     draw_skybox(view_matrix, proj_matrix);
-    draw_chunk(the_chunk, eye, view_matrix, proj_matrix);
+    draw_chunk(the_chunk, eye * 2.0f, view_matrix, proj_matrix);
 }
 
 bool handle_controls(
@@ -645,7 +699,7 @@ int Main(int, char** argv)
 
     bool no_quit = true;
 
-    glm::vec3 eye;
+    glm::vec3 eye(0, 0, 0);
     glm::mat4 view_matrix, proj_matrix;
 
     auto previous_update = SDL_GetTicks();
