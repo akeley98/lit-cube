@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -22,8 +23,8 @@ using std::swap;
 #include "SDL2/SDL.h"
 #include "SDL2/SDL_opengl.h"
 
-constexpr int chunk_size = 32;
-#define CHUNK_SIZE_STR "32"
+constexpr int chunk_size = 16;
+#define CHUNK_SIZE_STR "16"
 
 constexpr int chunk_view_radius = 7;
 
@@ -38,6 +39,7 @@ constexpr float
 int screen_x = 1280, screen_y = 960;
 SDL_Window* window = nullptr;
 std::string argv0;
+int chunks_to_draw = (unsigned)-1;
 
 static void panic(const char* message, const char* reason) {
     fprintf(stderr, "%s: %s %s\n", argv0.c_str(), message, reason);
@@ -468,9 +470,9 @@ class chunk
         assert(x < chunk_size);
         assert(y < chunk_size);
         assert(z < chunk_size);
-        const int old_alpha = int(blocks[x][y][z] & 1);
+        const int old_alpha = int(blocks[z][y][x] & 1);
         const int new_alpha = int(block & 1);
-        blocks[x][y][z] = block;
+        blocks[z][y][x] = block;
         opaque_block_count += (new_alpha - old_alpha);
     }
 
@@ -546,7 +548,6 @@ void draw_chunk(
     }
 
     glm::vec3 eye_in_model_space = (eye - glm::vec3(c.position));
-    // printf("(%f %f %f)\n", eye_in_model_space.x, eye_in_model_space.y, eye_in_model_space.z);
 
     glUseProgram(program_id);
 
@@ -571,6 +572,7 @@ void draw_chunk(
 
 class world
 {
+  public: // XXX
     std::unordered_map<uint64_t, std::unique_ptr<chunk>> chunk_map;
 
   public:
@@ -583,7 +585,14 @@ class world
         key = key << 16 | uint16_t(y_chunk);
         key = key << 16 | uint16_t(z_chunk);
         if (needed) {
-            return chunk_map[key].get();
+            std::unique_ptr<chunk>& ptr = chunk_map[key];
+            if (ptr == nullptr) {
+                ptr = std::make_unique<chunk>(glm::vec3(
+                    x_chunk * chunk_size,
+                    y_chunk * chunk_size,
+                    z_chunk * chunk_size));
+            }
+            return ptr.get();
         }
         auto iter = chunk_map.find(key);
         return iter == chunk_map.end() ? nullptr : iter->second.get();
@@ -601,15 +610,16 @@ class world
         unsigned x_in_chunk = unsigned(x) % chunk_size;
         unsigned y_in_chunk = unsigned(y) % chunk_size;
         unsigned z_in_chunk = unsigned(z) % chunk_size;
-        int x_chunk = x - int(x_in_chunk);
-        int y_chunk = y - int(y_in_chunk);
-        int z_chunk = z - int(z_in_chunk);
+        int x_chunk = (x - int(x_in_chunk)) / chunk_size;
+        int y_chunk = (y - int(y_in_chunk)) / chunk_size;
+        int z_chunk = (z - int(z_in_chunk)) / chunk_size;
+        assert(x_chunk * chunk_size + int(x_in_chunk) == x);
         chunk_ref(x_chunk, y_chunk, z_chunk).set_block(
             x_in_chunk, y_in_chunk, z_in_chunk, block);
     }
 };
 
-std::vector<std::unique_ptr<chunk>> chunk_vector;
+world the_world;
 
 std::unique_ptr<chunk> random_chunk(
     glm::vec3 chunk_position, std::mt19937& rng)
@@ -642,14 +652,26 @@ void draw_scene(
     draw_skybox(view_matrix, proj_matrix);
     chunk* chunk_eye_is_inside = nullptr;
     glm::vec3 fudged_eye = eye + forward_normal_vector * 0.5f;
-    // Todo: sort from nearest to furthest (reverse painters)
-    for (auto& chunk_ptr : chunk_vector) {
-        if (chunk_ptr->in_chunk(fudged_eye)) {
-            chunk_eye_is_inside = chunk_ptr.get();
+
+    // Sort from nearest to furthest (reverse painters)
+    std::vector<std::pair<float, chunk*>> chunks_by_depth;
+
+    unsigned count = 0;
+    for (auto& key_chunk_ptr_pair : the_world.chunk_map) {
+        chunk& chunk_to_draw = *key_chunk_ptr_pair.second;
+        if (chunk_to_draw.in_chunk(fudged_eye)) {
+            chunk_eye_is_inside = &chunk_to_draw;
+            continue;
         }
-        else {
-            draw_chunk(*chunk_ptr, eye, view_matrix, proj_matrix);
-        }
+        float depth = glm::dot(forward_normal_vector, chunk_to_draw.position);
+        chunks_by_depth.emplace_back(depth, &chunk_to_draw);
+    }
+    std::sort(chunks_by_depth.begin(), chunks_by_depth.end());
+
+    for (auto pair : chunks_by_depth)
+    {
+        if (count++ >= unsigned(chunks_to_draw)) break;
+        draw_chunk(*pair.second, eye, view_matrix, proj_matrix);
     }
     if (chunk_eye_is_inside != nullptr) {
         glDisable(GL_DEPTH_TEST);
@@ -698,13 +720,18 @@ bool handle_controls(
               break; case SDL_SCANCODE_E: e = true;
               break; case SDL_SCANCODE_SPACE:  space = true;
               break; case SDL_SCANCODE_B: chunk_debug = !chunk_debug;
+              break; case SDL_SCANCODE_LEFTBRACKET:
+                  --chunks_to_draw;
+                  if (chunks_to_draw < 0) chunks_to_draw = -1;
+              break; case SDL_SCANCODE_RIGHTBRACKET:
+                  ++chunks_to_draw;
               break; case SDL_SCANCODE_1: case SDL_SCANCODE_2:
                      case SDL_SCANCODE_3: case SDL_SCANCODE_4:
                      case SDL_SCANCODE_5: case SDL_SCANCODE_6:
                      case SDL_SCANCODE_7: case SDL_SCANCODE_8:
                      case SDL_SCANCODE_9: case SDL_SCANCODE_0:
                 camera_speed_multiplier = pow(
-                    2, event.key.keysym.scancode - SDL_SCANCODE_5);
+                    2, event.key.keysym.scancode - SDL_SCANCODE_3);
               break; case SDL_SCANCODE_COMMA:
                 w = a = s = d = q = e = space = false;
                 scancode_map[SDL_SCANCODE_O] = SDL_SCANCODE_Q;
@@ -838,17 +865,43 @@ int Main(int, char** argv)
     // glCullFace(GL_BACK);
 
     std::mt19937 rng;
-    const float bounds = chunk_view_radius * chunk_size;
+    //const float bounds = chunk_view_radius * chunk_size;
     double block_count = 0;
-    for (float x = 0; x < bounds; x += chunk_size) {
-        for (float y = 0; y < bounds; y += chunk_size) {
-            for (float z = 0; z < bounds; z += chunk_size) {
-                auto unique_chunk = random_chunk(glm::vec3(x, y, z), rng);
-                block_count += unique_chunk->get_opaque_block_count();
-                chunk_vector.push_back(std::move(unique_chunk));
+    // for (float x = 0; x < bounds; x += chunk_size) {
+    //     for (float y = 0; y < bounds; y += chunk_size) {
+    //         for (float z = 0; z < bounds; z += chunk_size) {
+    //             auto unique_chunk = random_chunk(glm::vec3(x, y, z), rng);
+    //             block_count += unique_chunk->get_opaque_block_count();
+    //             chunk_vector.push_back(std::move(unique_chunk));
+    //         }
+    //     }
+    // }
+    for (int x = -52; x < 52; ++x) {
+        for (int y = -52; y < 52; ++y) {
+            for (int z = -52; z < 52; ++z) {
+                if (x*x + y*y + z*z < 50*50) {
+                    auto red = uint16_t(std::min(31, std::max(6, y/2 + 18)));
+                    auto green = uint16_t(31 - red);
+                    auto blue = 31 - (rng() >> 28);
+                    uint16_t color = red << 11 | green << 6 | blue << 1 | 1;
+                    the_world.set_block(x, y, z, color);
+                }
             }
         }
     }
+
+    for (int i = 0; i < 500000; ++i) {
+        int x = rng() >> 24;
+        int y = rng() >> 24;
+        int z = rng() >> 24;
+        int color = rng() >> 16 | 1;
+        the_world.set_block(x, y, z, color);
+    }
+
+    for (auto& a_chunk : the_world.chunk_map) {
+        block_count += a_chunk.second->get_opaque_block_count();
+    }
+
     printf("%.0f blocks\n", block_count);
 
     bool no_quit = true;
