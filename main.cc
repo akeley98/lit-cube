@@ -937,13 +937,13 @@ int Main(int, char** argv)
     //     }
     // }
 
-    for (int walks = 0; walks < 32; ++walks) {
+    for (int walks = 0; walks < 24; ++walks) {
         uint16_t blue = rng() >> 28 | 16;
         uint16_t red = rng() >> 28 | 16;
         uint16_t green_base = rng() >> 28;
         int x = 0, y = 0, z = 0;
         // uint16_t color = rng() >> 16 | 0x8421;
-        for (int i = 0; i < 144000; ++i) {
+        for (int i = 0; i < 88888; ++i) {
             switch (rng() % 6) {
                 case 0: x++; break;
                 case 1: y++; break;
