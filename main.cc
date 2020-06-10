@@ -33,7 +33,7 @@ namespace {
 constexpr float
     fovy_radians = 1.0f,
     near_plane = 0.3f,
-    far_plane = 700.0f,
+    far_plane = 2048.0f,
     camera_speed = 8e-2;
 
 int screen_x = 1280, screen_y = 960;
@@ -177,6 +177,7 @@ static const char skybox_fs_source[] =
     "vec4 c = texture(cubemap, texture_coordinate);\n"
     "c.a = 1.0;\n"
     "color = c;\n"
+    "gl_FragDepth = 0.99999;\n"
 "}\n";
 
 static const float skybox_vertices[24] = {
@@ -326,7 +327,9 @@ static const char chunk_fs_source[] =
     "float best_t = 1.0 / 0.0;\n"
     "vec4 best_color = vec4(0,0,0,0);\n"
     "vec3 best_coord = vec3(0,0,0);\n"
-    "int x_init = xm > 0 ? 0 : " CHUNK_SIZE_STR ";\n"
+    //"int x_init = xm > 0 ? 0 : " CHUNK_SIZE_STR ";\n"
+    "int x_init = int(xm > 0 ? ceil(model_space_position.x) \n"
+               ": floor(model_space_position.x));\n"
     "int x_end = xm > 0 ? " CHUNK_SIZE_STR " : 0;\n"
     "int x_step = xm > 0 ? 1 : -1;\n"
     "float x_fudge = xm > 0 ? .25 : -.25;\n"
@@ -334,8 +337,8 @@ static const char chunk_fs_source[] =
         "float t = (x - x0) / xm;\n"
         "float y = y0 + ym * t;\n"
         "float z = z0 + zm * t;\n"
-        "if (y < 0 || y > " CHUNK_SIZE_STR ") continue;\n"
-        "if (z < 0 || z > " CHUNK_SIZE_STR ") continue;\n"
+        "if (y < 0 || y > " CHUNK_SIZE_STR ") break;\n"
+        "if (z < 0 || z > " CHUNK_SIZE_STR ") break;\n"
         "vec3 texcoord = vec3(x + x_fudge, y, z) * rcp;\n"
         "vec4 lookup_color = texture(chunk_blocks, texcoord);\n"
         "if (lookup_color.a > 0 && t > 0) {\n"
@@ -350,7 +353,8 @@ static const char chunk_fs_source[] =
             "break;\n"
         "}\n"
     "}\n"
-    "int y_init = ym > 0 ? 0 : " CHUNK_SIZE_STR ";\n"
+    "int y_init = int(ym > 0 ? ceil(model_space_position.y) \n"
+               ": floor(model_space_position.y));\n"
     "int y_end = ym > 0 ? " CHUNK_SIZE_STR " : 0;\n"
     "int y_step = ym > 0 ? 1 : -1;\n"
     "float y_fudge = ym > 0 ? .05 : -.05;\n"
@@ -358,8 +362,8 @@ static const char chunk_fs_source[] =
         "float t = (y - y0) / ym;\n"
         "float x = x0 + xm * t;\n"
         "float z = z0 + zm * t;\n"
-        "if (x < 0 || x > " CHUNK_SIZE_STR ") continue;\n"
-        "if (z < 0 || z > " CHUNK_SIZE_STR ") continue;\n"
+        "if (x < 0 || x > " CHUNK_SIZE_STR ") break;\n"
+        "if (z < 0 || z > " CHUNK_SIZE_STR ") break;\n"
         "vec3 texcoord = vec3(x, y + y_fudge, z) * rcp;\n"
         "vec4 lookup_color = texture(chunk_blocks, texcoord);\n"
         "if (lookup_color.a > 0 && t > 0) {\n"
@@ -374,7 +378,8 @@ static const char chunk_fs_source[] =
             "break;\n"
         "}\n"
     "}\n"
-    "int z_init = zm > 0 ? 0 : " CHUNK_SIZE_STR ";\n"
+    "int z_init = int(zm > 0 ? ceil(model_space_position.z) \n"
+               ": floor(model_space_position.z));\n"
     "int z_end = zm > 0 ? " CHUNK_SIZE_STR " : 0;\n"
     "int z_step = zm > 0 ? 1 : -1;\n"
     "float z_fudge = zm > 0 ? .05 : -.05;\n"
@@ -382,8 +387,8 @@ static const char chunk_fs_source[] =
         "float t = (z - z0) / zm;\n"
         "float x = x0 + xm * t;\n"
         "float y = y0 + ym * t;\n"
-        "if (x < 0 || x > " CHUNK_SIZE_STR ") continue;\n"
-        "if (y < 0 || y > " CHUNK_SIZE_STR ") continue;\n"
+        "if (x < 0 || x > " CHUNK_SIZE_STR ") break;\n"
+        "if (y < 0 || y > " CHUNK_SIZE_STR ") break;\n"
         "vec3 texcoord = vec3(x, y, z + z_fudge) * rcp;\n"
         "vec4 lookup_color = texture(chunk_blocks, texcoord);\n"
         "if (lookup_color.a > 0 && t > 0) {\n"
@@ -621,27 +626,6 @@ class world
 
 world the_world;
 
-std::unique_ptr<chunk> random_chunk(
-    glm::vec3 chunk_position, std::mt19937& rng)
-{
-    auto color = (rng() >> 16) | 1;
-    auto chunk_ptr = std::make_unique<chunk>(chunk_position);
-    for (int i = 0; i < 512; ++i) {
-        auto x = rng() >> 27;
-        auto y = rng() >> 27;
-        auto z = rng() >> 27;
-        chunk_ptr->set_block(x, y, z, color);
-    }
-    for (int i = 0; i < 2048; ++i) {
-        color = (rng() >> 16) | 1;
-        auto x = rng() >> 27;
-        auto y = rng() >> 27;
-        auto z = rng() >> 27;
-        chunk_ptr->set_block(x, y, z, color);
-    }
-    return chunk_ptr;
-}
-
 void draw_scene(
     glm::vec3 eye,
     glm::vec3 forward_normal_vector,
@@ -861,21 +845,12 @@ int Main(int, char** argv)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
     glEnable(GL_DEPTH_TEST);
-    // glEnable(GL_CULL_FACE);
-    // glCullFace(GL_BACK);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
 
     std::mt19937 rng;
-    //const float bounds = chunk_view_radius * chunk_size;
+    const float bounds = chunk_view_radius * chunk_size;
     double block_count = 0;
-    // for (float x = 0; x < bounds; x += chunk_size) {
-    //     for (float y = 0; y < bounds; y += chunk_size) {
-    //         for (float z = 0; z < bounds; z += chunk_size) {
-    //             auto unique_chunk = random_chunk(glm::vec3(x, y, z), rng);
-    //             block_count += unique_chunk->get_opaque_block_count();
-    //             chunk_vector.push_back(std::move(unique_chunk));
-    //         }
-    //     }
-    // }
     for (int x = -52; x < 52; ++x) {
         for (int y = -52; y < 52; ++y) {
             for (int z = -52; z < 52; ++z) {
@@ -890,13 +865,51 @@ int Main(int, char** argv)
         }
     }
 
-    for (int i = 0; i < 500000; ++i) {
-        int x = rng() >> 24;
-        int y = rng() >> 24;
-        int z = rng() >> 24;
-        int color = rng() >> 16 | 1;
-        the_world.set_block(x, y, z, color);
+    for (int walks = 0; walks < 16; ++walks) {
+        int x = 0, y = 0, z = 0;
+        uint16_t color = rng() >> 16 | 0x8421;
+        for (int i = 0; i < 144000; ++i) {
+            switch (rng() % 6) {
+                case 0: x++; break;
+                case 1: y++; break;
+                case 2: z++; break;
+                case 3: x--; break;
+                case 4: y--; break;
+                case 5: z--; break;
+            }
+            the_world.set_block(x, y, z, color);
+        }
     }
+    // double x = 0, y = 0, z = 1, w = 1;
+    // for (int i = 0; i < 1000000; ++i) {
+    //     double xx = x*x;
+    //     double yy = y*y;
+    //     double xy = x*y;
+    //     x = 0.757 - 1.25 * x - 0.288 * y + 0.170 * xx - 0.521 * xy + 0.403 * yy;
+    //     y =-1.155 - .016 * x - 0.058 * y + 0.546 * xx + 0.044 * xy + 0.795 * yy;
+
+    //     double zz = z*z;
+    //     double ww = w*w;
+    //     double zw = z*w;
+    //     z = -0.160 * w - 0.014 * z - 0.525 * zw - 0.233 * ww - 0.828 * zz + 1.051;
+    //     w = -1.369 * w + 0.562 * z + 0.990 * zw - 0.355 * ww + 0.664 * zz + 0.0327;
+
+    //     if (w < -10 or w > 10 or z < -10 or z > 10) break;
+
+    //     the_world.set_block(
+    //         int(rintf(x * 120)),
+    //         int(rintf(y * 120)),
+    //         int(rintf(z * 120)),
+    //         0x0fff);
+    // }
+
+    // for (int i = 0; i < 1000000; ++i) {
+    //     int x = rng() >> 24;
+    //     int y = rng() >> 24;
+    //     int z = rng() >> 24;
+    //     int color = rng() >> 16 | 1;
+    //     the_world.set_block(x, y, z, color);
+    // }
 
     for (auto& a_chunk : the_world.chunk_map) {
         block_count += a_chunk.second->get_opaque_block_count();
