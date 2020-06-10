@@ -272,14 +272,14 @@ void draw_skybox(
 
 static const float chunk_vertices[32] =
 {
-    0, chunk_size, chunk_size, 1,
-    0, 0, chunk_size, 1,
-    chunk_size, 0, chunk_size, 1,
-    chunk_size, chunk_size, chunk_size, 1,
-    0, chunk_size, 0, 1,
+    0, 1, 1, 1,
+    0, 0, 1, 1,
+    1, 0, 1, 1,
+    1, 1, 1, 1,
+    0, 1, 0, 1,
     0, 0, 0, 1,
-    chunk_size, 0, 0, 1,
-    chunk_size, chunk_size, 0, 1,
+    1, 0, 0, 1,
+    1, 1, 0, 1,
 };
 
 static const GLushort chunk_elements[36] = {
@@ -298,10 +298,14 @@ static const char chunk_vs_source[] =
 "uniform vec3 chunk_offset;\n"
 "uniform mat4 view_matrix;\n"
 "uniform mat4 proj_matrix;\n"
+"uniform vec3 aabb_low;\n"
+"uniform vec3 aabb_high;\n"
 "void main() {\n"
+    "vec3 aabb_size = aabb_high - aabb_low;"
+    "vec4 _model_space_pos = vec4(in_vertex.xyz * aabb_size + aabb_low, 1);\n"
     "gl_Position = proj_matrix * view_matrix * \n"
-        "(in_vertex + vec4(chunk_offset, 0));\n"
-    "model_space_position = in_vertex;\n"
+        "(_model_space_pos + vec4(chunk_offset, 0));\n"
+    "model_space_position = _model_space_pos;\n"
 "}\n";
 
 static const char chunk_fs_source[] =
@@ -423,12 +427,68 @@ class chunk
     uint16_t blocks[chunk_size][chunk_size][chunk_size] = {};
     GLuint texture_name = 0;
     int32_t opaque_block_count = 0;
+    int16_t x_block_counts[chunk_size] = { 0 };
+    int16_t y_block_counts[chunk_size] = { 0 };
+    int16_t z_block_counts[chunk_size] = { 0 };
+    glm::vec3 aabb_low = glm::vec3(0,0,0);
+    glm::vec3 aabb_high = glm::vec3(0,0,0);
+
+    void fix_dirty()
+    {
+        aabb_low = glm::vec3(chunk_size, chunk_size, chunk_size);
+        aabb_high = glm::vec3(0, 0, 0);
+        int32_t x_counts = 0, y_counts = 0, z_counts = 0;
+        for (size_t i = 0; i < chunk_size; ++i) {
+            x_counts += x_block_counts[i];
+            y_counts += y_block_counts[i];
+            z_counts += z_block_counts[i];
+            if (x_block_counts[i] >= 1) {
+                aabb_low.x = std::min<float>(i, aabb_low.x);
+                aabb_high.x = std::max<float>(i+1, aabb_high.x);
+            }
+            if (y_block_counts[i] >= 1) {
+                aabb_low.y = std::min<float>(i, aabb_low.y);
+                aabb_high.y = std::max<float>(i+1, aabb_high.y);
+            }
+            if (z_block_counts[i] >= 1) {
+                aabb_low.z = std::min<float>(i, aabb_low.z);
+                aabb_high.z = std::max<float>(i+1, aabb_high.z);
+            }
+        }
+        if (z_counts != opaque_block_count) {
+            printf("%i", opaque_block_count);
+            for (int i = 0; i < chunk_size; ++i) {
+                printf(" %i", z_block_counts[i]);
+            }
+            printf("\n");
+        }
+        assert(x_counts == opaque_block_count);
+        assert(y_counts == opaque_block_count);
+        assert(z_counts == opaque_block_count);
+
+        if (!dirty) return;
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA,
+                     chunk_size, chunk_size, chunk_size, 0,
+                     GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, blocks);
+        dirty = false;
+        PANIC_IF_GL_ERROR;
+    }
   public:
     const glm::vec3 position;
 
     chunk(glm::vec3 in_position) : position(in_position)
     {
 
+    }
+
+    const float* ptr_aabb_low() const
+    {
+        return &aabb_low[0];
+    }
+
+    const float* ptr_aabb_high() const
+    {
+        return &aabb_high[0];
     }
 
     GLuint get_texture_name()
@@ -445,14 +505,7 @@ class chunk
             glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
             PANIC_IF_GL_ERROR;
         }
-        if (dirty)
-        {
-            glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA,
-                chunk_size, chunk_size, chunk_size, 0,
-                GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, blocks);
-            dirty = false;
-            PANIC_IF_GL_ERROR;
-        }
+        fix_dirty();
         return texture_name;
     }
 
@@ -462,6 +515,7 @@ class chunk
             glDeleteTextures(1, &texture_name);
             texture_name = 0;
             PANIC_IF_GL_ERROR;
+            dirty = true;
         }
     }
 
@@ -472,13 +526,19 @@ class chunk
 
     void set_block(size_t x, size_t y, size_t z, uint16_t block)
     {
+        dirty = true;
         assert(x < chunk_size);
         assert(y < chunk_size);
         assert(z < chunk_size);
         const int old_alpha = int(blocks[z][y][x] & 1);
         const int new_alpha = int(block & 1);
         blocks[z][y][x] = block;
-        opaque_block_count += (new_alpha - old_alpha);
+        const int16_t block_count_change = int16_t(new_alpha - old_alpha);
+        assert(block_count_change <= 1 && block_count_change >= -1);
+        opaque_block_count += block_count_change;
+        x_block_counts[x] += block_count_change;
+        y_block_counts[y] += block_count_change;
+        z_block_counts[z] += block_count_change;
     }
 
     bool in_chunk(glm::vec3 v) const
@@ -512,6 +572,8 @@ void draw_chunk(
     static GLint chunk_offset_id;
     static GLint view_matrix_id;
     static GLint proj_matrix_id;
+    static GLint aabb_low_id;
+    static GLint aabb_high_id;
     static GLint chunk_blocks_id;
     static GLint eye_in_model_space_id;
     static GLint chunk_debug_id;
@@ -521,6 +583,8 @@ void draw_chunk(
         chunk_offset_id = glGetUniformLocation(program_id, "chunk_offset");
         view_matrix_id = glGetUniformLocation(program_id, "view_matrix");
         proj_matrix_id = glGetUniformLocation(program_id, "proj_matrix");
+        aabb_low_id = glGetUniformLocation(program_id, "aabb_low");
+        aabb_high_id = glGetUniformLocation(program_id, "aabb_high");
         chunk_blocks_id = glGetUniformLocation(program_id, "chunk_blocks");
         eye_in_model_space_id = glGetUniformLocation(
             program_id, "eye_in_model_space");
@@ -563,6 +627,8 @@ void draw_chunk(
     glUniform3fv(chunk_offset_id, 1, &c.position[0]);
     glUniformMatrix4fv(view_matrix_id, 1, 0, &view_matrix[0][0]);
     glUniformMatrix4fv(proj_matrix_id, 1, 0, &proj_matrix[0][0]);
+    glUniform3fv(aabb_low_id, 1, c.ptr_aabb_low());
+    glUniform3fv(aabb_high_id, 1, c.ptr_aabb_high());
     glUniform3fv(eye_in_model_space_id, 1, &eye_in_model_space[0]);
     glUniform1i(chunk_debug_id, chunk_debug);
 
@@ -849,25 +915,27 @@ int Main(int, char** argv)
     glCullFace(GL_BACK);
 
     std::mt19937 rng;
-    const float bounds = chunk_view_radius * chunk_size;
     double block_count = 0;
-    for (int x = -52; x < 52; ++x) {
-        for (int y = -52; y < 52; ++y) {
-            for (int z = -52; z < 52; ++z) {
-                if (x*x + y*y + z*z < 50*50) {
-                    auto red = uint16_t(std::min(31, std::max(6, y/2 + 18)));
-                    auto green = uint16_t(31 - red);
-                    auto blue = 31 - (rng() >> 28);
-                    uint16_t color = red << 11 | green << 6 | blue << 1 | 1;
-                    the_world.set_block(x, y, z, color);
-                }
-            }
-        }
-    }
+    // for (int x = -52; x < 52; ++x) {
+    //     for (int y = -52; y < 52; ++y) {
+    //         for (int z = -52; z < 52; ++z) {
+    //             if (x*x + y*y + z*z < 50*50) {
+    //                 auto red = uint16_t(std::min(31, std::max(6, y/2 + 18)));
+    //                 auto green = uint16_t(31 - red);
+    //                 auto blue = 31 - (rng() >> 28);
+    //                 uint16_t color = red << 11 | green << 6 | blue << 1 | 1;
+    //                 the_world.set_block(x, y, z, color);
+    //             }
+    //         }
+    //     }
+    // }
 
-    for (int walks = 0; walks < 16; ++walks) {
+    for (int walks = 0; walks < 32; ++walks) {
+        uint16_t blue = rng() >> 28 | 16;
+        uint16_t red = rng() >> 28 | 16;
+        uint16_t green_base = rng() >> 28;
         int x = 0, y = 0, z = 0;
-        uint16_t color = rng() >> 16 | 0x8421;
+        // uint16_t color = rng() >> 16 | 0x8421;
         for (int i = 0; i < 144000; ++i) {
             switch (rng() % 6) {
                 case 0: x++; break;
@@ -877,6 +945,8 @@ int Main(int, char** argv)
                 case 4: y--; break;
                 case 5: z--; break;
             }
+            uint16_t green = (rng() >> 28) + green_base;
+            uint16_t color = red << 11 | green << 6 | blue << 1 | 1;
             the_world.set_block(x, y, z, color);
         }
     }
@@ -911,11 +981,13 @@ int Main(int, char** argv)
     //     the_world.set_block(x, y, z, color);
     // }
 
+    double chunk_count = 0;
     for (auto& a_chunk : the_world.chunk_map) {
         block_count += a_chunk.second->get_opaque_block_count();
+        ++chunk_count;
     }
 
-    printf("%.0f blocks\n", block_count);
+    printf("%.0f blocks   %.0f chunks\n", block_count, chunk_count);
 
     bool no_quit = true;
 
