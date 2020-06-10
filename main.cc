@@ -705,6 +705,9 @@ void draw_scene(
 
     // Sort from nearest to furthest (reverse painters)
     std::vector<std::pair<float, chunk*>> chunks_by_depth;
+    float h = chunk_size * 0.5f;
+    auto fixup =
+        glm::dot(forward_normal_vector, glm::vec3(h,h,h) - eye);
 
     unsigned count = 0;
     for (auto& key_chunk_ptr_pair : the_world.chunk_map) {
@@ -713,7 +716,11 @@ void draw_scene(
             chunk_eye_is_inside = &chunk_to_draw;
             continue;
         }
-        float depth = glm::dot(forward_normal_vector, chunk_to_draw.position);
+        float depth = glm::dot(forward_normal_vector, chunk_to_draw.position)
+                    + fixup;
+        if (depth < -chunk_size) {
+            continue;
+        }
         chunks_by_depth.emplace_back(depth, &chunk_to_draw);
     }
     std::sort(chunks_by_depth.begin(), chunks_by_depth.end());
