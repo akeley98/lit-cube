@@ -35,7 +35,7 @@ constexpr float
     near_plane = 0.3f,
     far_plane = 2048.0f,
     camera_speed = 4.f,
-    raycast_distance_threshold = 64.f;
+    raycast_distance_threshold = 80.f;
 
 int screen_x = 1280, screen_y = 960;
 SDL_Window* window = nullptr;
@@ -1043,6 +1043,8 @@ bool handle_controls(
                 camera_speed_multiplier *= 0.5f;
               break; case SDL_SCANCODE_E:
                 camera_speed_multiplier *= 2.0f;
+              break; case SDL_SCANCODE_O:
+                eye = glm::vec3(0, 0, 0);
               break; case SDL_SCANCODE_COMMA:
                 w = a = s = d = up = down = sprint = false;
                 scancode_map[SDL_SCANCODE_U] = SDL_SCANCODE_W;
@@ -1051,6 +1053,7 @@ bool handle_controls(
                 scancode_map[SDL_SCANCODE_A] = SDL_SCANCODE_D;
                 scancode_map[SDL_SCANCODE_COMMA] = SDL_SCANCODE_Q;
                 scancode_map[SDL_SCANCODE_I] = SDL_SCANCODE_E;
+                scancode_map[SDL_SCANCODE_Z] = SDL_SCANCODE_O;
                 scancode_map[SDL_SCANCODE_O] = SDL_SCANCODE_LSHIFT;
                 scancode_map[SDL_SCANCODE_LALT] = SDL_SCANCODE_LCTRL;
                 scancode_map[SDL_SCANCODE_LCTRL] = SDL_SCANCODE_SPACE;
