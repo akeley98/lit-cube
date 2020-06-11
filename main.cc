@@ -278,7 +278,7 @@ class chunk
         chunk& c, glm::vec3 eye, glm::mat4 view_matrix, glm::mat4 proj_matrix);
     friend void draw_chunk_conventional(
         chunk& c, glm::mat4 view_matrix, glm::mat4 proj_matrix);
-    friend void update_window_title();
+    friend void update_window_title(glm::vec3);
 
     static int loaded_vbo;
 
@@ -565,21 +565,27 @@ static const char chunk_vs_source[] =
 "#version 330\n"
 "layout(location=0) in vec4 in_vertex;\n"
 "out vec4 unit_box_position;\n"
+"out float border_fade;\n"
 "uniform vec3 chunk_offset;\n"
 "uniform mat4 view_matrix;\n"
 "uniform mat4 proj_matrix;\n"
 "uniform vec3 aabb_low;\n"
 "uniform vec3 aabb_size;\n"
+"uniform vec3 eye_in_model_space;\n"
 "void main() {\n"
     "vec4 model_space_pos = vec4(in_vertex.xyz * aabb_size + aabb_low, 1);\n"
     "gl_Position = proj_matrix * view_matrix * \n"
         "(model_space_pos + vec4(chunk_offset, 0));\n"
     "unit_box_position = in_vertex;\n"
+    "vec3 disp = model_space_pos.xyz - eye_in_model_space;\n"
+    "float distance = sqrt(dot(disp, disp));\n"
+    "border_fade = clamp(sqrt(distance) * 0.042, 0.5, 1.0);\n"
 "}\n";
 
 static const char chunk_fs_source[] =
 "#version 330\n"
 "in vec4 unit_box_position;\n"
+"in float border_fade;\n"
 "uniform vec3 eye_in_model_space;\n"
 "uniform sampler3D chunk_blocks;\n"
 "uniform bool chunk_debug;\n"
@@ -623,7 +629,7 @@ static const char chunk_fs_source[] =
                 "best_color = lookup_color;\n"
                 "best_coord = vec3(x,y,z);\n"
                 "if (y - floor(y + d) < d || z - floor(z + d) < d) {\n"
-                    "best_color.rgb *= 0.5;\n"
+                    "best_color.rgb *= border_fade;\n"
                 "}\n"
             "}\n"
             "break;\n"
@@ -648,7 +654,7 @@ static const char chunk_fs_source[] =
                 "best_color = lookup_color;\n"
                 "best_coord = vec3(x,y,z);\n"
                 "if (x - floor(x + d) < d || z - floor(z + d) < d) {\n"
-                    "best_color.rgb *= 0.5;\n"
+                    "best_color.rgb *= border_fade;\n"
                 "}\n"
             "}\n"
             "break;\n"
@@ -673,7 +679,7 @@ static const char chunk_fs_source[] =
                 "best_color = lookup_color;\n"
                 "best_coord = vec3(x,y,z);\n"
                 "if (x - floor(x + d) < d || y - floor(y + d) < d) {\n"
-                    "best_color.rgb *= 0.5;\n"
+                    "best_color.rgb *= border_fade;\n"
                 "}\n"
             "}\n"
             "break;\n"
@@ -1147,9 +1153,15 @@ bool handle_controls(
     return no_quit;
 }
 
-void update_window_title()
+void update_window_title(glm::vec3 eye)
 {
-    std::string title = "Voxels ";
+    std::string title = "Voxels (";
+    title += std::to_string(int(rintf(eye.x)));
+    title += " ";
+    title += std::to_string(int(rintf(eye.y)));
+    title += " ";
+    title += std::to_string(int(rintf(eye.z)));
+    title += ") ";
     title += std::to_string(int(rintf(current_fps)));
     title += " FPS ";
     title += std::to_string(chunk::loaded_vbo);
@@ -1167,7 +1179,6 @@ int Main(int, char** argv)
         screen_x, screen_y,
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE
     );
-    update_window_title();
     if (window == nullptr) {
         panic("Could not initialize window", SDL_GetError());
     }
@@ -1276,6 +1287,7 @@ int Main(int, char** argv)
     int frames = 0;
 
     while (no_quit) {
+        update_window_title(eye);
         auto current_tick = SDL_GetTicks();
         if (current_tick >= previous_update + 16) {
             float dt = 0.001f * (current_tick - previous_handle_controls);
@@ -1294,7 +1306,6 @@ int Main(int, char** argv)
                             / (current_tick-previous_fps_print);
                 previous_fps_print = current_tick;
                 frames = 0;
-                update_window_title();
             }
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
