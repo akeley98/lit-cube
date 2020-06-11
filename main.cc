@@ -919,7 +919,6 @@ void draw_scene(
 {
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     draw_skybox(view_matrix, proj_matrix);
-    chunk* chunk_eye_is_inside = nullptr;
 
     // Sort from nearest to furthest (reverse painters)
     std::vector<std::pair<float, chunk*>> raycast_chunks_by_depth;
@@ -1193,7 +1192,6 @@ int Main(int, char** argv)
         uint16_t red = rng() >> 28 | 16;
         uint16_t green_base = rng() >> 28;
         int x = 0, y = 0, z = 0;
-        uint16_t color = rng() >> 16 | 0x8421;
         for (int i = 0; i < 88888; ++i) {
             switch (rng() % 6) {
                 case 0: x++; break;
