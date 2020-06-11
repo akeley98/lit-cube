@@ -203,7 +203,7 @@ static const GLushort skybox_elements[36] = {
 };
 
 void draw_skybox(
-    glm::mat4 view_matrix, glm::mat4 proj_matrix)
+    glm::mat4 vp_matrix)
 {
     static bool cubemap_loaded = false;
     static GLuint cubemap_texture_id;
@@ -216,14 +216,12 @@ void draw_skybox(
     static GLuint program_id;
     static GLuint vertex_buffer_id;
     static GLuint element_buffer_id;
-    static GLint view_matrix_id;
-    static GLint proj_matrix_id;
+    static GLint vp_matrix_id;
     static GLint cubemap_uniform_id;
 
     if (vao == 0) {
         program_id = make_program(skybox_vs_source, skybox_fs_source);
-        view_matrix_id = glGetUniformLocation(program_id, "view_matrix");
-        proj_matrix_id = glGetUniformLocation(program_id, "proj_matrix");
+        vp_matrix_id = glGetUniformLocation(program_id, "vp_matrix");
         cubemap_uniform_id = glGetUniformLocation(program_id, "cubemap");
 
         glGenVertexArrays(1, &vao);
@@ -261,8 +259,7 @@ void draw_skybox(
     glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_texture_id);
     glUniform1i(cubemap_uniform_id, 0);
 
-    glUniformMatrix4fv(view_matrix_id, 1, 0, &view_matrix[0][0]);
-    glUniformMatrix4fv(proj_matrix_id, 1, 0, &proj_matrix[0][0]);
+    glUniformMatrix4fv(vp_matrix_id, 1, 0, &vp_matrix[0][0]);
 
     glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_SHORT, (void*)0);
@@ -275,9 +272,9 @@ void draw_skybox(
 class chunk
 {
     friend void draw_chunk_raycast(
-        chunk& c, glm::vec3 eye, glm::mat4 view_matrix, glm::mat4 proj_matrix);
+        chunk& c, glm::vec3 eye, glm::mat4 vp_matrix, bool first_time);
     friend void draw_chunk_conventional(
-        chunk& c, glm::mat4 view_matrix, glm::mat4 proj_matrix);
+        chunk& c, glm::mat4 vp_matrix, bool first_time);
     friend void update_window_title(glm::vec3);
 
     static int loaded_vbo;
@@ -567,14 +564,13 @@ static const char chunk_vs_source[] =
 "out vec4 unit_box_position;\n"
 "out float border_fade;\n"
 "uniform vec3 chunk_offset;\n"
-"uniform mat4 view_matrix;\n"
-"uniform mat4 proj_matrix;\n"
+"uniform mat4 vp_matrix;\n"
 "uniform vec3 aabb_low;\n"
 "uniform vec3 aabb_size;\n"
 "uniform vec3 eye_in_model_space;\n"
 "void main() {\n"
     "vec4 model_space_pos = vec4(in_vertex.xyz * aabb_size + aabb_low, 1);\n"
-    "gl_Position = proj_matrix * view_matrix * \n"
+    "gl_Position = vp_matrix * \n"
         "(model_space_pos + vec4(chunk_offset, 0));\n"
     "unit_box_position = in_vertex;\n"
     "vec3 disp = model_space_pos.xyz - eye_in_model_space;\n"
@@ -687,20 +683,19 @@ static const char chunk_fs_source[] =
     "}\n"
     "if (best_color.a == 0) discard;\n"
     "color = best_color;\n"
-    //"vec4 v = proj_matrix * view_matrix * vec4(best_coord + chunk_offset, 1);\n"
+    //"vec4 v = vp_matrix * vec4(best_coord + chunk_offset, 1);\n"
     //"gl_FragDepth = .3;\n"
 "} else {\n"
     // "color = texture(chunk_blocks, model_space_position.xyz / 16.0);\n"
     "int x_floor = int(floor(model_space_position.x));\n"
     "int y_floor = int(floor(model_space_position.y));\n"
     "int z_floor = int(floor(model_space_position.z));\n"
-    "int n = (x_floor + y_floor + z_floor) % 8;\n"
-    "color = vec4((n & 1) != 0 ? 1 : 0, (n & 2) != 0 ? 1 : 0, (n & 4) != 0 ? 1 : 0, 1);\n"
+    "color = vec4(x_floor & 1, y_floor & 1, z_floor & 1, 1);\n"
 "}\n"
 "}\n";
 
 void draw_chunk_raycast(
-    chunk& c, glm::vec3 eye, glm::mat4 view_matrix, glm::mat4 proj_matrix)
+    chunk& c, glm::vec3 eye, glm::mat4 vp_matrix, bool first_time)
 {
     if (c.get_opaque_block_count() == 0) {
         return;
@@ -711,8 +706,7 @@ void draw_chunk_raycast(
     static GLuint vertex_buffer_id;
     static GLuint element_buffer_id;
     static GLint chunk_offset_id;
-    static GLint view_matrix_id;
-    static GLint proj_matrix_id;
+    static GLint vp_matrix_id;
     static GLint aabb_low_id;
     static GLint aabb_size_id;
     static GLint chunk_blocks_id;
@@ -722,8 +716,7 @@ void draw_chunk_raycast(
     if (vao == 0) {
         program_id = make_program(chunk_vs_source, chunk_fs_source);
         chunk_offset_id = glGetUniformLocation(program_id, "chunk_offset");
-        view_matrix_id = glGetUniformLocation(program_id, "view_matrix");
-        proj_matrix_id = glGetUniformLocation(program_id, "proj_matrix");
+        vp_matrix_id = glGetUniformLocation(program_id, "vp_matrix");
         aabb_low_id = glGetUniformLocation(program_id, "aabb_low");
         aabb_size_id = glGetUniformLocation(program_id, "aabb_size");
         chunk_blocks_id = glGetUniformLocation(program_id, "chunk_blocks");
@@ -759,25 +752,22 @@ void draw_chunk_raycast(
 
     glm::vec3 eye_in_model_space = (eye - glm::vec3(c.position));
 
-    glUseProgram(program_id);
+    if (first_time) {
+        glUseProgram(program_id);
+        glBindVertexArray(vao);
+        glUniform1i(chunk_blocks_id, 0);
+        glUniformMatrix4fv(vp_matrix_id, 1, 0, &vp_matrix[0][0]);
+        glUniform1i(chunk_debug_id, chunk_debug);
+        glActiveTexture(GL_TEXTURE0);
+    }
 
-    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_3D, c.get_texture_name());
-
-    glUniform1i(chunk_blocks_id, 0);
     glUniform3fv(chunk_offset_id, 1, &c.position[0]);
-    glUniformMatrix4fv(view_matrix_id, 1, 0, &view_matrix[0][0]);
-    glUniformMatrix4fv(proj_matrix_id, 1, 0, &proj_matrix[0][0]);
     glUniform3fv(aabb_low_id, 1, &c.aabb_low[0]);
     glUniform3fv(aabb_size_id, 1, &(c.aabb_high - c.aabb_low)[0]);
     glUniform3fv(eye_in_model_space_id, 1, &eye_in_model_space[0]);
-    glUniform1i(chunk_debug_id, chunk_debug);
 
-    glBindVertexArray(vao);
-    //glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, (void*)0);
     glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_SHORT, (void*)0);
-    glBindVertexArray(0);
-    glBindTexture(GL_TEXTURE_3D, 0);
 
     PANIC_IF_GL_ERROR;
 }
@@ -789,11 +779,10 @@ const char chunk_conventional_vs_source[] =
 "out vec3 color;\n"
 "out vec3 model_space_position_;\n"
 "uniform vec3 chunk_offset;\n"
-"uniform mat4 view_matrix;\n"
-"uniform mat4 proj_matrix;\n"
+"uniform mat4 vp_matrix;\n"
 "void main() {\n"
     "vec4 v = vec4(chunk_offset + model_space_position, 1);\n"
-    "gl_Position = proj_matrix * (view_matrix * v);\n"
+    "gl_Position = vp_matrix * v;\n"
     "float red   = ((integer_color >> 11) & 31) * (1./31.);\n"
     "float green = ((integer_color >> 6) & 31) * (1./31.);\n"
     "float blue  = ((integer_color >> 1) & 31) * (1./31.);\n"
@@ -819,34 +808,33 @@ const char chunk_conventional_fs_source[] =
 "}\n";
 
 void draw_chunk_conventional(
-    chunk& c, glm::mat4 view_matrix, glm::mat4 proj_matrix)
+    chunk& c, glm::mat4 vp_matrix, bool first_time)
 {
     static GLuint vao = 0;
     static GLuint program_id;
     static GLint chunk_offset_id;
-    static GLint view_matrix_id;
-    static GLint proj_matrix_id;
+    static GLint vp_matrix_id;
     if (vao == 0) {
         program_id = make_program(chunk_conventional_vs_source,
                                   chunk_conventional_fs_source);
         chunk_offset_id = glGetUniformLocation(program_id, "chunk_offset");
-        view_matrix_id = glGetUniformLocation(program_id, "view_matrix");
-        proj_matrix_id = glGetUniformLocation(program_id, "proj_matrix");
+        vp_matrix_id = glGetUniformLocation(program_id, "vp_matrix");
         PANIC_IF_GL_ERROR;
 
         glGenVertexArrays(1, &vao);
         glBindVertexArray(vao);
     }
-    glBindVertexArray(vao);
 
-    glUseProgram(program_id);
-    PANIC_IF_GL_ERROR;
+    if (first_time) {
+        glBindVertexArray(vao);
+        glUseProgram(program_id);
+        PANIC_IF_GL_ERROR;
+
+        glUniformMatrix4fv(vp_matrix_id, 1, 0, &vp_matrix[0][0]);
+        PANIC_IF_GL_ERROR;
+    }
 
     glUniform3fv(chunk_offset_id, 1, &c.position[0]);
-    glUniformMatrix4fv(view_matrix_id, 1, 0, &view_matrix[0][0]);
-    glUniformMatrix4fv(proj_matrix_id, 1, 0, &proj_matrix[0][0]);
-    PANIC_IF_GL_ERROR;
-
     unsigned vertex_count;
     auto vbo_id = c.get_vertex_buffer_id(&vertex_count);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_id);
@@ -872,7 +860,6 @@ void draw_chunk_conventional(
     PANIC_IF_GL_ERROR;
 
     glDrawArrays(GL_TRIANGLES, 0, vertex_count);
-    glBindVertexArray(0);
     PANIC_IF_GL_ERROR;
 }
 
@@ -880,7 +867,6 @@ class world
 {
   public: // XXX
     std::unordered_map<uint64_t, std::unique_ptr<chunk>> chunk_map;
-
   public:
     chunk* chunk_ptr(int x_chunk, int y_chunk, int z_chunk, bool needed=false)
     {
@@ -934,7 +920,8 @@ void draw_scene(
     glm::mat4 proj_matrix)
 {
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-    draw_skybox(view_matrix, proj_matrix);
+    auto vp_matrix = proj_matrix * view_matrix;
+    draw_skybox(vp_matrix);
 
     // Sort from nearest to furthest (reverse painters)
     std::vector<std::pair<float, chunk*>> raycast_chunks_by_depth;
@@ -965,15 +952,19 @@ void draw_scene(
     }
     std::sort(raycast_chunks_by_depth.begin(), raycast_chunks_by_depth.end());
 
+    bool first_time = true;
     for (chunk* chunk_ptr : nearby_chunks) {
         if (count++ >= unsigned(chunks_to_draw)) break;
-        draw_chunk_conventional(*chunk_ptr, view_matrix, proj_matrix);
+        draw_chunk_conventional(*chunk_ptr, vp_matrix, first_time);
+        first_time = false;
     }
 
+    first_time = true;
     for (auto pair : raycast_chunks_by_depth)
     {
         if (count++ >= unsigned(chunks_to_draw)) break;
-        draw_chunk_raycast(*pair.second, eye, view_matrix, proj_matrix);
+        draw_chunk_raycast(*pair.second, eye, vp_matrix, first_time);
+        first_time = false;
     }
 
     // Save gpu memory
