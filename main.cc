@@ -203,7 +203,7 @@ static const GLushort skybox_elements[36] = {
 };
 
 void draw_skybox(
-    glm::mat4 vp_matrix)
+    glm::mat4 view_matrix, glm::mat4 proj_matrix)
 {
     static bool cubemap_loaded = false;
     static GLuint cubemap_texture_id;
@@ -216,12 +216,14 @@ void draw_skybox(
     static GLuint program_id;
     static GLuint vertex_buffer_id;
     static GLuint element_buffer_id;
-    static GLint vp_matrix_id;
+    static GLint view_matrix_id;
+    static GLint proj_matrix_id;
     static GLint cubemap_uniform_id;
 
     if (vao == 0) {
         program_id = make_program(skybox_vs_source, skybox_fs_source);
-        vp_matrix_id = glGetUniformLocation(program_id, "vp_matrix");
+        view_matrix_id = glGetUniformLocation(program_id, "view_matrix");
+        proj_matrix_id = glGetUniformLocation(program_id, "proj_matrix");
         cubemap_uniform_id = glGetUniformLocation(program_id, "cubemap");
 
         glGenVertexArrays(1, &vao);
@@ -259,7 +261,8 @@ void draw_skybox(
     glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_texture_id);
     glUniform1i(cubemap_uniform_id, 0);
 
-    glUniformMatrix4fv(vp_matrix_id, 1, 0, &vp_matrix[0][0]);
+    glUniformMatrix4fv(view_matrix_id, 1, 0, &view_matrix[0][0]);
+    glUniformMatrix4fv(proj_matrix_id, 1, 0, &proj_matrix[0][0]);
 
     glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_SHORT, (void*)0);
@@ -921,7 +924,7 @@ void draw_scene(
 {
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     auto vp_matrix = proj_matrix * view_matrix;
-    draw_skybox(vp_matrix);
+    draw_skybox(view_matrix, proj_matrix);
 
     // Sort from nearest to furthest (reverse painters)
     std::vector<std::pair<float, chunk*>> raycast_chunks_by_depth;
