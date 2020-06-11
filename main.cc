@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <random>
 #include <utility>
@@ -34,7 +35,7 @@ constexpr float
     near_plane = 0.3f,
     far_plane = 2048.0f,
     camera_speed = 4.f,
-    raycast_distance_threshold = 42.f;
+    raycast_distance_threshold = 64.f;
 
 int screen_x = 1280, screen_y = 960;
 SDL_Window* window = nullptr;
@@ -277,6 +278,9 @@ class chunk
         chunk& c, glm::vec3 eye, glm::mat4 view_matrix, glm::mat4 proj_matrix);
     friend void draw_chunk_conventional(
         chunk& c, glm::mat4 view_matrix, glm::mat4 proj_matrix);
+    friend void update_window_title();
+
+    static int loaded_vbo;
 
     bool dirty = false;
     uint16_t blocks[chunk_size][chunk_size][chunk_size] = {};
@@ -376,6 +380,7 @@ class chunk
     GLuint get_vertex_buffer_id(unsigned* out_vertex_count)
     {
         if (vertex_buffer_id == 0) {
+            ++loaded_vbo;
             glGenBuffers(1, &vertex_buffer_id);
             glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_id);
             fill_vertex_buffer();
@@ -487,8 +492,11 @@ class chunk
 
     void unload_vertex_buffer()
     {
-        glDeleteBuffers(1, &vertex_buffer_id);
-        vertex_buffer_id = 0;
+        if (vertex_buffer_id != 0) {
+            glDeleteBuffers(1, &vertex_buffer_id);
+            vertex_buffer_id = 0;
+            --loaded_vbo;
+        }
     }
 
     int32_t get_opaque_block_count() const
@@ -523,11 +531,13 @@ class chunk
     ~chunk()
     {
         unload_texture();
+        unload_vertex_buffer();
     }
 
     chunk(chunk&&) = delete;
 };
 
+int chunk::loaded_vbo = 0;
 bool chunk_debug = false;
 
 static const float chunk_vertices[32] =
@@ -922,7 +932,7 @@ void draw_scene(
 
     // Sort from nearest to furthest (reverse painters)
     std::vector<std::pair<float, chunk*>> raycast_chunks_by_depth;
-    std::vector<chunk*> nearby_chunks;
+    std::unordered_set<chunk*> nearby_chunks;
 
     float h = chunk_size * 0.5f;
     auto fixup =
@@ -944,7 +954,7 @@ void draw_scene(
             raycast_chunks_by_depth.emplace_back(depth, &chunk_to_draw);
         }
         else {
-            nearby_chunks.emplace_back(&chunk_to_draw);
+            nearby_chunks.insert(&chunk_to_draw);
         }
     }
     std::sort(raycast_chunks_by_depth.begin(), raycast_chunks_by_depth.end());
@@ -958,6 +968,14 @@ void draw_scene(
     {
         if (count++ >= unsigned(chunks_to_draw)) break;
         draw_chunk_raycast(*pair.second, eye, view_matrix, proj_matrix);
+    }
+
+    // Save gpu memory
+    for (auto& pair : the_world.chunk_map) {
+        chunk* chunk_ptr = pair.second.get();
+        if (nearby_chunks.count(chunk_ptr) == 0) {
+            chunk_ptr->unload_vertex_buffer();
+        }
     }
 }
 
@@ -1133,7 +1151,9 @@ void update_window_title()
 {
     std::string title = "Voxels ";
     title += std::to_string(int(rintf(current_fps)));
-    title += " FPS";
+    title += " FPS ";
+    title += std::to_string(chunk::loaded_vbo);
+    title += " chunk VBO ";
     SDL_SetWindowTitle(window, title.c_str());
 }
 
