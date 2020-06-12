@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -364,8 +365,8 @@ class chunk
                          chunk_size, chunk_size, chunk_size, 0,
                          GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, blocks);
             PANIC_IF_GL_ERROR;
-            fix_dirty();
         }
+        fix_dirty();
         return texture_name;
     }
 
@@ -379,6 +380,7 @@ class chunk
 
     GLuint get_vertex_buffer_id(unsigned* out_vertex_count)
     {
+        fix_dirty();
         if (vertex_buffer_id == 0) {
             ++loaded_vbo;
             glGenBuffers(1, &vertex_buffer_id);
@@ -700,10 +702,6 @@ static const char chunk_fs_source[] =
 void draw_chunk_raycast(
     chunk& c, glm::vec3 eye, glm::mat4 vp_matrix, bool first_time)
 {
-    if (c.get_opaque_block_count() == 0) {
-        return;
-    }
-
     static GLuint vao = 0;
     static GLuint program_id;
     static GLuint vertex_buffer_id;
@@ -756,22 +754,29 @@ void draw_chunk_raycast(
     glm::vec3 eye_in_model_space = (eye - glm::vec3(c.position));
 
     if (first_time) {
+        PANIC_IF_GL_ERROR;
         glUseProgram(program_id);
         glBindVertexArray(vao);
-        glUniform1i(chunk_blocks_id, 0);
         glUniformMatrix4fv(vp_matrix_id, 1, 0, &vp_matrix[0][0]);
         glUniform1i(chunk_debug_id, chunk_debug);
         glActiveTexture(GL_TEXTURE0);
+        glUniform1i(chunk_blocks_id, 0);
+    }
+
+    if (c.get_opaque_block_count() == 0) {
+        return;
     }
 
     glBindTexture(GL_TEXTURE_3D, c.get_texture_name());
+    PANIC_IF_GL_ERROR;
+
     glUniform3fv(chunk_offset_id, 1, &c.position[0]);
     glUniform3fv(aabb_low_id, 1, &c.aabb_low[0]);
     glUniform3fv(aabb_size_id, 1, &(c.aabb_high - c.aabb_low)[0]);
     glUniform3fv(eye_in_model_space_id, 1, &eye_in_model_space[0]);
+    PANIC_IF_GL_ERROR;
 
     glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_SHORT, (void*)0);
-
     PANIC_IF_GL_ERROR;
 }
 
@@ -835,6 +840,10 @@ void draw_chunk_conventional(
 
         glUniformMatrix4fv(vp_matrix_id, 1, 0, &vp_matrix[0][0]);
         PANIC_IF_GL_ERROR;
+    }
+
+    if (c.get_opaque_block_count() == 0) {
+        return;
     }
 
     glUniform3fv(chunk_offset_id, 1, &c.position[0]);
@@ -979,6 +988,259 @@ void draw_scene(
     }
 }
 
+template <int N, int Border>
+class congestion_model
+{
+    constexpr static uint16_t
+        red_category = 1,
+        green_category = 2,
+        blue_category = 3,
+        blank = 0;
+
+    struct tile
+    {
+        int red_next_ptrdiff = 0;
+        int green_next_ptrdiff = 0;
+        int blue_next_ptrdiff = 0;
+        int x = 0, y = 0, z = 0;
+        uint16_t old_category = 0, current_category = 0;
+        uint16_t color = 0;
+    };
+    std::array<tile, N*N*6> tile_array;
+    uint16_t tick_color = blue_category;
+
+  public:
+    congestion_model(std::mt19937& rng, double probability)
+    {
+        tile* pos_x_face = &tile_array[N*N*0];
+        tile* pos_y_face = &tile_array[N*N*1];
+        tile* pos_z_face = &tile_array[N*N*2];
+        tile* neg_x_face = &tile_array[N*N*3];
+        tile* neg_y_face = &tile_array[N*N*4];
+        tile* neg_z_face = &tile_array[N*N*5];
+
+        tile* red_next = nullptr;
+        tile* green_next = nullptr;
+        tile* blue_next = nullptr;
+
+        uint32_t thresh = uint32_t(2147483648.0 * probability);
+        auto maybe_fill_tile = [&] (tile& t, uint16_t c0, uint16_t c1)
+        {
+            assert(t.current_category == blank);
+            uint32_t r = rng();
+            uint16_t set_category = blank;
+            if (r < thresh) {
+                t.current_category = c0;
+                set_category = c0;
+            }
+            if (r > ~thresh) {
+                t.current_category = c1;
+                set_category = c1;
+            }
+            uint16_t color = 0;
+            if (set_category != blank) {
+                auto bump0 = rng() % 9;
+                auto bump1 = rng() % 5;
+                if (bump0 <= 1 && bump1 <= 0) {
+                    switch (set_category) {
+                        default: assert(0);
+                        break; case red_category:
+                            color = 31 << 11 | 17 << 6 | 20 << 1 | 1;
+                        break; case green_category:
+                            color = 31 << 11 | 31 << 6 | 7 << 1 | 1;
+                        break; case blue_category:
+                            color = 15 << 6 | 31 << 1 | 1;
+                    }
+                }
+                else {
+                    switch (set_category) {
+                        default: assert(0);
+                        break; case red_category:
+                            color = (16+bump0) << 11 | 4 << 6
+                                  | (7+bump1) << 1 | 1;
+                        break; case green_category:
+                            color = (bump1 + 8) << 11
+                                  | (28-bump0) << 6 | 1;
+                        break; case blue_category:
+                            color = (19+bump0) << 11 | (19+bump0) << 6
+                                  | (31-bump1) << 1 | 1;
+                    }
+                }
+            }
+            the_world.set_block(t.x, t.y, t.z, color);
+            t.color = color;
+        };
+
+        for (int y = 0; y < N; ++y) {
+            for (int z = 0; z < N; ++z) {
+                tile& t = neg_x_face[y*N + z];
+
+                green_next = z == 0 ?
+                            &neg_z_face[0*N + y] : &neg_x_face[y*N + z-1];
+                blue_next = y == 0 ?
+                            &neg_y_face[0*N + z] : &neg_x_face[(y-1)*N + z];
+                t.green_next_ptrdiff = int(green_next - &t);
+                t.blue_next_ptrdiff  = int(blue_next  - &t);
+                t.x = -1;
+                t.y = y;
+                t.z = z;
+                if (Border <= y and y < N - Border
+                and Border <= z and z < N - Border) {
+                    maybe_fill_tile(t, green_category, blue_category);
+                }
+            }
+        }
+
+        for (int y = 0; y < N; ++y) {
+            for (int z = 0; z < N; ++z) {
+                tile& t = pos_x_face[y*N + z];
+
+                green_next = z == N-1 ?
+                            &pos_z_face[(N-1)*N + y] : &pos_x_face[y*N + z+1];
+                blue_next = y == N-1 ?
+                            &pos_y_face[(N-1)*N + z] : &pos_x_face[(y+1)*N + z];
+                t.green_next_ptrdiff = int(green_next - &t);
+                t.blue_next_ptrdiff  = int(blue_next  - &t);
+                t.x = N;
+                t.y = y;
+                t.z = z;
+                if (Border <= y and y < N - Border
+                and Border <= z and z < N - Border) {
+                    maybe_fill_tile(t, green_category, blue_category);
+                }
+            }
+        }
+
+        for (int x = 0; x < N; ++x) {
+            for (int z = 0; z < N; ++z) {
+                tile& t = neg_y_face[x*N + z];
+
+                red_next = z == 0 ?
+                          &neg_z_face[x*N + 0] : &neg_y_face[x*N + z-1];
+                blue_next = x == N-1 ?
+                          &pos_x_face[0*N + z] : &neg_y_face[(x+1)*N + z];
+
+                t.red_next_ptrdiff  = int(red_next - &t);
+                t.blue_next_ptrdiff = int(blue_next  - &t);
+                t.x = x;
+                t.y = -1;
+                t.z = z;
+                if (Border <= x and x < N - Border
+                and Border <= z and z < N - Border) {
+                    maybe_fill_tile(t, red_category, blue_category);
+                }
+            }
+        }
+
+        for (int x = 0; x < N; ++x) {
+            for (int z = 0; z < N; ++z) {
+                tile& t = pos_y_face[x*N + z];
+
+                red_next = z == N-1 ?
+                          &pos_z_face[x*N + N-1] : &pos_y_face[x*N + z+1];
+                blue_next = x == 0 ?
+                          &neg_x_face[(N-1)*N + z] : &pos_y_face[(x-1)*N + z];
+
+                t.red_next_ptrdiff  = int(red_next - &t);
+                t.blue_next_ptrdiff = int(blue_next  - &t);
+                t.x = x;
+                t.y = N;
+                t.z = z;
+                if (Border <= x and x < N - Border
+                and Border <= z and z < N - Border) {
+                    maybe_fill_tile(t, red_category, blue_category);
+                }
+            }
+        }
+
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < N; ++y) {
+                tile& t = neg_z_face[x*N + y];
+
+                red_next = y == N-1 ?
+                          &pos_y_face[x*N + 0] : &neg_z_face[x*N + y+1];
+                green_next = x == N-1 ?
+                          &pos_x_face[y*N + 0] : &neg_z_face[(x+1)*N + y];
+
+                t.red_next_ptrdiff  = int(red_next - &t);
+                t.green_next_ptrdiff = int(green_next - &t);
+                t.x = x;
+                t.y = y;
+                t.z = -1;
+                if (Border <= x and x < N - Border
+                and Border <= y and y < N - Border) {
+                    maybe_fill_tile(t, red_category, green_category);
+                }
+            }
+        }
+
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < N; ++y) {
+                tile& t = pos_z_face[x*N + y];
+
+                red_next = y == 0 ?
+                          &neg_y_face[x*N + N-1] : &pos_z_face[x*N + y-1];
+                green_next = x == 0 ?
+                          &neg_x_face[y*N + N-1] : &pos_z_face[(x-1)*N + y];
+
+                t.red_next_ptrdiff  = int(red_next - &t);
+                t.green_next_ptrdiff = int(green_next - &t);
+                t.x = x;
+                t.y = y;
+                t.z = N;
+                if (Border <= x and x < N - Border
+                and Border <= y and y < N - Border) {
+                    maybe_fill_tile(t, red_category, green_category);
+                }
+            }
+        }
+    }
+
+    template <uint16_t ColorCategory>
+    void update_tile(tile& t) {
+        auto relptr = ColorCategory == red_category ? t.red_next_ptrdiff :
+                      ColorCategory == green_category ? t.green_next_ptrdiff :
+                      ColorCategory == blue_category ? t.blue_next_ptrdiff : 0;
+        tile& next = (&t)[relptr];
+        assert(&*tile_array.begin() <= &next && &next < &*tile_array.end());
+        if (next.old_category == blank && t.old_category == ColorCategory) {
+            next.current_category = ColorCategory;
+            t.current_category = blank;
+            next.color = t.color;
+            t.color = blank;
+            the_world.set_block(t.x, t.y, t.z, t.color);
+            the_world.set_block(next.x, next.y, next.z, next.color);
+        }
+    }
+
+    void update()
+    {
+        for (tile& t : tile_array) {
+            t.old_category = t.current_category;
+        }
+        switch (tick_color) {
+          default: assert(0);
+          break; case red_category:
+            tick_color = green_category;
+            for (tile& t : tile_array) {
+                update_tile<red_category>(t);
+            }
+          break; case green_category:
+            tick_color = blue_category;
+            for (tile& t : tile_array) {
+                update_tile<green_category>(t);
+            }
+          break; case blue_category:
+            tick_color = red_category;
+            for (tile& t : tile_array) {
+                update_tile<blue_category>(t);
+            }
+        }
+    }
+};
+
+bool congestion_skip_tmp;
+
 bool handle_controls(
     glm::vec3* eye_ptr, glm::vec3* forward_normal_vector_ptr,
     glm::mat4* view_ptr, glm::mat4* proj_ptr, float dt)
@@ -1053,6 +1315,8 @@ bool handle_controls(
                 scancode_map[SDL_SCANCODE_LCTRL] = SDL_SCANCODE_SPACE;
               break; case SDL_SCANCODE_PERIOD:
                 scancode_map.clear();
+              break; case SDL_SCANCODE_K:
+                congestion_skip_tmp = true;
             }
 
           break; case SDL_KEYUP:
@@ -1140,13 +1404,6 @@ bool handle_controls(
         far_plane
     );
 
-    // float y_plane_radius = tanf(fovy_radians / 2.0f);
-    // float x_plane_radius = y_plane_radius * screen_x / screen_y;
-    // float mouse_vcs_x = x_plane_radius * (2.0f * mouse_x / screen_x - 1.0f);
-    // float mouse_vcs_y = y_plane_radius * (1.0f - 2.0f * mouse_y / screen_y);
-    // glm::vec4 mouse_vcs(mouse_vcs_x, mouse_vcs_y, -1.0f, 1.0f);
-    // glm::vec4 mouse_wcs = glm::inverse(view) * mouse_vcs;
-
     return no_quit;
 }
 
@@ -1164,6 +1421,29 @@ void update_window_title(glm::vec3 eye)
     title += std::to_string(chunk::loaded_vbo);
     title += " chunk VBO ";
     SDL_SetWindowTitle(window, title.c_str());
+}
+
+void add_random_walks(int walks, int length, std::mt19937& rng)
+{
+    for (int w = 0; w < walks; ++w) {
+        uint16_t blue = rng() >> 28 | 16;
+        uint16_t red = rng() >> 28 | 16;
+        uint16_t green_base = rng() >> 28;
+        int x = 0, y = 0, z = 0;
+        for (int i = 0; i < length; ++i) {
+            switch (rng() % 6) {
+                case 0: x++; break;
+                case 1: y++; break;
+                case 2: z++; break;
+                case 3: x--; break;
+                case 4: y--; break;
+                case 5: z--; break;
+            }
+            uint16_t green = (rng() >> 28) + green_base;
+            uint16_t color = red << 11 | green << 6 | blue << 1 | 1;
+            the_world.set_block(x, y, z, color);
+        }
+    }
 }
 
 int Main(int, char** argv)
@@ -1201,69 +1481,9 @@ int Main(int, char** argv)
 
     std::mt19937 rng;
     double block_count = 0;
-    // for (int x = -52; x < 52; ++x) {
-    //     for (int y = -52; y < 52; ++y) {
-    //         for (int z = -52; z < 52; ++z) {
-    //             if (x*x + y*y + z*z < 50*50) {
-    //                 auto red = uint16_t(std::min(31, std::max(6, y/2 + 18)));
-    //                 auto green = uint16_t(31 - red);
-    //                 auto blue = 31 - (rng() >> 28);
-    //                 uint16_t color = red << 11 | green << 6 | blue << 1 | 1;
-    //                 the_world.set_block(x, y, z, color);
-    //             }
-    //         }
-    //     }
-    // }
 
-    for (int walks = 0; walks < 24; ++walks) {
-        uint16_t blue = rng() >> 28 | 16;
-        uint16_t red = rng() >> 28 | 16;
-        uint16_t green_base = rng() >> 28;
-        int x = 0, y = 0, z = 0;
-        for (int i = 0; i < 88888; ++i) {
-            switch (rng() % 6) {
-                case 0: x++; break;
-                case 1: y++; break;
-                case 2: z++; break;
-                case 3: x--; break;
-                case 4: y--; break;
-                case 5: z--; break;
-            }
-            uint16_t green = (rng() >> 28) + green_base;
-            uint16_t color = red << 11 | green << 6 | blue << 1 | 1;
-            the_world.set_block(x, y, z, color);
-        }
-    }
-    // double x = 0, y = 0, z = 1, w = 1;
-    // for (int i = 0; i < 1000000; ++i) {
-    //     double xx = x*x;
-    //     double yy = y*y;
-    //     double xy = x*y;
-    //     x = 0.757 - 1.25 * x - 0.288 * y + 0.170 * xx - 0.521 * xy + 0.403 * yy;
-    //     y =-1.155 - .016 * x - 0.058 * y + 0.546 * xx + 0.044 * xy + 0.795 * yy;
-
-    //     double zz = z*z;
-    //     double ww = w*w;
-    //     double zw = z*w;
-    //     z = -0.160 * w - 0.014 * z - 0.525 * zw - 0.233 * ww - 0.828 * zz + 1.051;
-    //     w = -1.369 * w + 0.562 * z + 0.990 * zw - 0.355 * ww + 0.664 * zz + 0.0327;
-
-    //     if (w < -10 or w > 10 or z < -10 or z > 10) break;
-
-    //     the_world.set_block(
-    //         int(rintf(x * 120)),
-    //         int(rintf(y * 120)),
-    //         int(rintf(z * 120)),
-    //         0x0fff);
-    // }
-
-    // for (int i = 0; i < 1000000; ++i) {
-    //     int x = rng() >> 24;
-    //     int y = rng() >> 24;
-    //     int z = rng() >> 24;
-    //     int color = rng() >> 16 | 1;
-    //     the_world.set_block(x, y, z, color);
-    // }
+    // add_random_walks(24, 88888, rng);
+    add_random_walks(0, 88888, rng);
 
     double chunk_count = 0;
     for (auto& a_chunk : the_world.chunk_map) {
@@ -1279,9 +1499,12 @@ int Main(int, char** argv)
     glm::mat4 view_matrix, proj_matrix;
 
     auto previous_update = SDL_GetTicks();
+    auto previous_congestion_update = SDL_GetTicks();
     auto previous_fps_print = SDL_GetTicks();
     auto previous_handle_controls = SDL_GetTicks();
     int frames = 0;
+
+    congestion_model<88, 8> the_congestion_model(rng, 0.5);
 
     while (no_quit) {
         update_window_title(eye);
@@ -1293,8 +1516,13 @@ int Main(int, char** argv)
                 &eye, &forward_normal_vector, &view_matrix, &proj_matrix, dt);
             previous_handle_controls = current_tick;
             previous_update += 16;
+            if (current_tick - previous_congestion_update > 75) {
+                the_congestion_model.update();
+                previous_congestion_update += 75;
+            }
             if (current_tick - previous_update > 100) {
                 previous_update = current_tick;
+                previous_congestion_update = current_tick;
             }
 
             ++frames;
@@ -1304,6 +1532,10 @@ int Main(int, char** argv)
                 previous_fps_print = current_tick;
                 frames = 0;
             }
+        }
+        if (congestion_skip_tmp) {
+            for (int i = 0; i < 1000; ++i) the_congestion_model.update();
+            congestion_skip_tmp = false;
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, screen_x, screen_y);
