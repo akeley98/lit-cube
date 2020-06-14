@@ -21,7 +21,7 @@ using std::swap;
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 
-#include "gl_core_3_3.h"
+#include "glad/glad.h"
 #include "SDL2/SDL.h"
 #include "SDL2/SDL_opengl.h"
 
@@ -1459,8 +1459,8 @@ int Main(int, char** argv)
     if (window == nullptr) {
         panic("Could not initialize window", SDL_GetError());
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
 
     auto context = SDL_GL_CreateContext(window);
     if (context == nullptr) {
@@ -1469,8 +1469,9 @@ int Main(int, char** argv)
     if (SDL_GL_MakeCurrent(window, context) < 0) {
         panic("SDL OpenGL context error", SDL_GetError());
     }
-
-    ogl_LoadFunctions();
+    if (!gladLoadGL()) {
+        panic("gladLoadGL failure", "gladLoadGL failure");
+    }
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
