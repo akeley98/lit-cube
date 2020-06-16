@@ -35,8 +35,9 @@ constexpr float
     fovy_radians = 1.0f,
     near_plane = 0.3f,
     far_plane = 2048.0f,
-    camera_speed = 4.f,
-    raycast_distance_threshold = 80.f;
+    camera_speed = 4.f;
+
+float raycast_distance_threshold = 120.f;
 
 int screen_x = 1280, screen_y = 960;
 SDL_Window* window = nullptr;
@@ -953,7 +954,7 @@ void draw_scene(
         }
         glm::vec3 disp = chunk_to_draw.position - eye;
         float squared_dist = glm::dot(disp, disp);
-        constexpr float squared_thresh = raycast_distance_threshold
+        float squared_thresh = raycast_distance_threshold
                                        * raycast_distance_threshold;
         if (squared_dist >= squared_thresh) {
             raycast_chunks_by_depth.emplace_back(depth, &chunk_to_draw);
@@ -1239,7 +1240,7 @@ class congestion_model
     }
 };
 
-bool congestion_skip_tmp;
+bool do_it;
 
 bool handle_controls(
     glm::vec3* eye_ptr, glm::vec3* forward_normal_vector_ptr,
@@ -1316,7 +1317,17 @@ bool handle_controls(
               break; case SDL_SCANCODE_PERIOD:
                 scancode_map.clear();
               break; case SDL_SCANCODE_K:
-                congestion_skip_tmp = true;
+                do_it = true;
+              break; case SDL_SCANCODE_BACKSLASH:
+                the_world.chunk_map.clear();
+              break; case SDL_SCANCODE_MINUS:
+                raycast_distance_threshold *= 0.5f;
+                printf("raycast_distance_threshold %.1f\n",
+                    raycast_distance_threshold);
+              break; case SDL_SCANCODE_EQUALS:
+                raycast_distance_threshold *= 2;
+                printf("raycast_distance_threshold %.1f\n",
+                    raycast_distance_threshold);
             }
 
           break; case SDL_KEYUP:
@@ -1481,18 +1492,17 @@ int Main(int, char** argv)
     glCullFace(GL_BACK);
 
     std::mt19937 rng;
-    double block_count = 0;
 
-    // add_random_walks(24, 88888, rng);
-    add_random_walks(0, 88888, rng);
-
-    double chunk_count = 0;
-    for (auto& a_chunk : the_world.chunk_map) {
-        block_count += a_chunk.second->get_opaque_block_count();
-        ++chunk_count;
-    }
-
-    printf("%.0f blocks   %.0f chunks\n", block_count, chunk_count);
+    auto print_world_size = [&] ()
+    {
+        double block_count = 0;
+        double chunk_count = 0;
+        for (auto& a_chunk : the_world.chunk_map) {
+            block_count += a_chunk.second->get_opaque_block_count();
+            ++chunk_count;
+        }
+        printf("%.0f blocks   %.0f chunks\n", block_count, chunk_count);
+    };
 
     bool no_quit = true;
 
@@ -1500,12 +1510,12 @@ int Main(int, char** argv)
     glm::mat4 view_matrix, proj_matrix;
 
     auto previous_update = SDL_GetTicks();
-    auto previous_congestion_update = SDL_GetTicks();
+    // auto previous_congestion_update = SDL_GetTicks();
     auto previous_fps_print = SDL_GetTicks();
     auto previous_handle_controls = SDL_GetTicks();
     int frames = 0;
 
-    congestion_model<88, 8> the_congestion_model(rng, 0.5);
+    // congestion_model<88, 8> the_congestion_model(rng, 0.5);
 
     while (no_quit) {
         update_window_title(eye);
@@ -1517,13 +1527,13 @@ int Main(int, char** argv)
                 &eye, &forward_normal_vector, &view_matrix, &proj_matrix, dt);
             previous_handle_controls = current_tick;
             previous_update += 16;
-            if (current_tick - previous_congestion_update > 75) {
-                the_congestion_model.update();
-                previous_congestion_update += 75;
-            }
+            // if (current_tick - previous_congestion_update > 75) {
+            //     the_congestion_model.update();
+            //     previous_congestion_update += 75;
+            // }
             if (current_tick - previous_update > 100) {
                 previous_update = current_tick;
-                previous_congestion_update = current_tick;
+                // previous_congestion_update = current_tick;
             }
 
             ++frames;
@@ -1534,9 +1544,14 @@ int Main(int, char** argv)
                 frames = 0;
             }
         }
-        if (congestion_skip_tmp) {
-            for (int i = 0; i < 1000; ++i) the_congestion_model.update();
-            congestion_skip_tmp = false;
+        // if (do_it) {
+        //     for (int i = 0; i < 1000; ++i) the_congestion_model.update();
+        //     do_it = false;
+        // }
+        if (do_it) {
+            add_random_walks(1, 100000, rng);
+            do_it = false;
+            print_world_size();
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, screen_x, screen_y);
