@@ -320,22 +320,16 @@ class chunk
                 aabb_high.z = std::max<float>(i+1, aabb_high.z);
             }
         }
-        if (z_counts != opaque_block_count) {
-            printf("%i", opaque_block_count);
-            for (int i = 0; i < chunk_size; ++i) {
-                printf(" %i", z_block_counts[i]);
-            }
-            printf("\n");
-        }
+
         assert(x_counts == opaque_block_count);
         assert(y_counts == opaque_block_count);
         assert(z_counts == opaque_block_count);
 
         if (texture_name != 0) {
             glBindTexture(GL_TEXTURE_3D, texture_name);
-            glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA,
-                         chunk_size, chunk_size, chunk_size, 0,
-                         GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, blocks);
+            glTexSubImage3D(GL_TEXTURE_3D, 0,
+                            0, 0, 0, chunk_size, chunk_size, chunk_size,
+                            GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, blocks);
         }
         fill_vertex_buffer();
 
@@ -1510,12 +1504,12 @@ int Main(int, char** argv)
     glm::mat4 view_matrix, proj_matrix;
 
     auto previous_update = SDL_GetTicks();
-    // auto previous_congestion_update = SDL_GetTicks();
+    auto previous_congestion_update = SDL_GetTicks();
     auto previous_fps_print = SDL_GetTicks();
     auto previous_handle_controls = SDL_GetTicks();
     int frames = 0;
 
-    // congestion_model<88, 8> the_congestion_model(rng, 0.5);
+    static congestion_model<365, 8> the_congestion_model(rng, 0.8);
 
     while (no_quit) {
         update_window_title(eye);
@@ -1527,13 +1521,13 @@ int Main(int, char** argv)
                 &eye, &forward_normal_vector, &view_matrix, &proj_matrix, dt);
             previous_handle_controls = current_tick;
             previous_update += 16;
-            // if (current_tick - previous_congestion_update > 75) {
-            //     the_congestion_model.update();
-            //     previous_congestion_update += 75;
-            // }
+            if (current_tick - previous_congestion_update > 75) {
+                the_congestion_model.update();
+                previous_congestion_update += 75;
+            }
             if (current_tick - previous_update > 100) {
                 previous_update = current_tick;
-                // previous_congestion_update = current_tick;
+                previous_congestion_update = current_tick;
             }
 
             ++frames;
@@ -1544,15 +1538,15 @@ int Main(int, char** argv)
                 frames = 0;
             }
         }
-        // if (do_it) {
-        //     for (int i = 0; i < 1000; ++i) the_congestion_model.update();
-        //     do_it = false;
-        // }
         if (do_it) {
-            add_random_walks(1, 100000, rng);
+            for (int i = 0; i < 1000; ++i) the_congestion_model.update();
             do_it = false;
-            print_world_size();
         }
+        // if (do_it) {
+        //     add_random_walks(1, 100000, rng);
+        //     do_it = false;
+        //     print_world_size();
+        // }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, screen_x, screen_y);
         draw_scene(eye, forward_normal_vector, view_matrix, proj_matrix);
